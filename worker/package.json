@@ -9,6 +9,7 @@
     "dockerize": "tsx src/cli.ts dockerize",
     "run-legacy": "tsx src/cli.ts run",
     "analyze": "tsx src/cli.ts analyze",
+    "translate": "tsx src/cli.ts translate",
     "delete-run": "tsx src/cli.ts delete-run",
     "test": "tsx --test test/*.test.ts",
     "identity": "tsx src/smoke.ts identity",

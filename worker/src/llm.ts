@@ -54,7 +54,28 @@ export interface ChatRequest {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-/** One chat completion with cache and retries (429 / 5xx / timeouts). */
+/**
+ * Process-wide throttle: NVIDIA's hosted API limits requests per minute, and
+ * the agents run several tasks in parallel. Every real (uncached) call waits
+ * for its slot. NEMOTRON_RPM in .env overrides the default.
+ */
+let nextSlot = 0;
+async function throttle(): Promise<void> {
+  const rpm = Math.max(1, Number(process.env.NEMOTRON_RPM) || 30);
+  const gap = 60_000 / rpm;
+  const now = Date.now();
+  const at = Math.max(now, nextSlot);
+  nextSlot = at + gap;
+  if (at > now) await sleep(at - now);
+}
+
+/** Delay before retry `attempt` (0-based). Rate limits get long waits; other errors short ones. */
+export function retryDelay(msg: string, attempt: number): number {
+  if (/\b429\b|too many requests/i.test(msg)) return 20_000 * 2 ** Math.min(attempt, 3); // 20 s, 40 s, 80 s, 160 s...
+  return 2000 * 2 ** attempt;
+}
+
+/** One chat completion with cache, throttling and retries (429 / 5xx / timeouts). */
 export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse> {
   const body = JSON.stringify(request);
   const key = createHash('sha256').update(body).digest('hex');
@@ -63,9 +84,11 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
   if (useCache && existsSync(file)) return { ...(JSON.parse(await readFile(file, 'utf8')) as ChatResponse), fromCache: true };
 
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let send: ChatRequest = request;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await throttle();
     try {
-      const res = (await db.nemotronChat(request as { messages: unknown[] })) as ChatResponse;
+      const res = (await db.nemotronChat(send as { messages: unknown[] })) as ChatResponse;
       if (useCache) {
         await mkdir(CACHE_DIR, { recursive: true });
         await writeFile(file, JSON.stringify(res));
@@ -74,9 +97,20 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
     } catch (e) {
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
-      const retryable = /\b(429|500|502|503|504)\b|timed? ?out|ECONNRESET|fetch failed/i.test(msg);
+      const timeout = /timed? ?out/i.test(msg);
+      const rateLimited = /\b429\b|too many requests/i.test(msg);
+      const retryable = timeout || rateLimited || /\b(500|502|503|504)\b|ECONNRESET|fetch failed/i.test(msg);
       if (!retryable || (e instanceof StdbError && /not a writer|not set/.test(msg))) throw e;
-      await sleep(2000 * 2 ** attempt);
+      // The same request will most likely time out again (long thinking on a
+      // slow API): retry once with thinking off, which answers much faster.
+      if (timeout) {
+        if (send.chat_template_kwargs?.enable_thinking === false) throw e;
+        send = { ...request, chat_template_kwargs: { enable_thinking: false } };
+        continue;
+      }
+      // Other server errors: 4 tries. Rate limits: keep waiting (up to ~5 min in total).
+      if (!rateLimited && attempt >= 3) throw e;
+      await sleep(retryDelay(msg, attempt));
     }
   }
   throw lastError;
@@ -117,14 +151,16 @@ export interface ToolLoopOptions {
   handle: (name: string, args: Record<string, unknown>) => Promise<string>;
   /** The tool whose arguments are the agent's answer; calling it ends the loop. */
   finalTool: string;
-  /** Validates the final answer; return an error message to make the model fix it. */
-  validate?: (args: Record<string, unknown>) => string | undefined;
+  /** Validates the final answer; return an error message to make the model fix it. May be async. */
+  validate?: (args: Record<string, unknown>) => string | undefined | Promise<string | undefined>;
   maxTurns?: number;
   maxTokens?: number;
   /** Called for every tool call (for live agent_event logging). */
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   /** Called when a final answer is rejected by `validate` (the model then retries). */
   onReject?: (problem: string) => void;
+  /** false = Nemotron answers without its reasoning phase (faster, shorter replies). Default: on. */
+  thinking?: boolean;
 }
 
 export interface ToolLoopResult {
@@ -170,6 +206,7 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
       tool_choice: forceFinal ? { type: 'function', function: { name: o.finalTool } } : 'auto',
       max_tokens: o.maxTokens ?? 12000,
       temperature: 0,
+      ...(o.thinking === false ? { chat_template_kwargs: { enable_thinking: false } } : {}),
     });
     reasoningTokens += res.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
     promptTokens += res.usage?.prompt_tokens ?? 0;
@@ -182,7 +219,13 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
     messages.push({ role: 'assistant', content: msg.content ?? null, ...(calls.length ? { tool_calls: calls } : {}) });
 
     if (calls.length === 0) {
-      messages.push({ role: 'user', content: `Continue. When you are done, call ${o.finalTool} with your complete answer.` });
+      const cutOff = res.choices[0]?.finish_reason === 'length';
+      messages.push({
+        role: 'user',
+        content: cutOff
+          ? `Your reply was cut off before you made a tool call. Keep your thinking short and make the next tool call now. When you are done, call ${o.finalTool}.`
+          : `Continue. When you are done, call ${o.finalTool} with your complete answer.`,
+      });
       continue;
     }
 
@@ -200,7 +243,7 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
 
       if (call.function.name === o.finalTool) {
         if (o.normalize) args = o.normalize(args);
-        const problem = o.validate?.(args);
+        const problem = await o.validate?.(args);
         if (!problem) return result(args, turn);
         o.onReject?.(problem);
         messages.push({ role: 'tool', tool_call_id: call.id, content: `REJECTED: ${problem}. Fix it and call ${o.finalTool} again.` });

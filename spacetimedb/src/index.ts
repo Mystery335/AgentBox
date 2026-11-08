@@ -1,6 +1,6 @@
 // AgentProof SpacetimeDB module (database "legacy-data" on Maincloud).
 // Data contract: 10 public tables (incl. `analysis`) + private `writer`,
-// 17 reducers (incl. delete_run), 2 procedures (nemotron_ping, nemotron_chat).
+// 18 reducers (incl. delete_run, add_translation), 2 procedures (nemotron_ping, nemotron_chat).
 //
 // Field choice for the §7.12 conflict: the team's original plan fields, with the
 // v2 additions on top (split, kind, rule_id, disposition, legacy_sha256,
@@ -26,6 +26,7 @@ const RUN_STATUSES = [
   'analyzing',
   'analyzed', // Analyzer done; waiting for the Translator (watchdog ignores it)
   'translating',
+  'translated', // Translator done; waiting for the Verifier (watchdog ignores it)
   'verifying',
   'debugging',
   'shadow',
@@ -38,7 +39,8 @@ const FINAL_RUN_STATUSES = ['ready_for_cutover', 'failed'] as const;
 const NEXT_STATUS: Record<string, readonly string[]> = {
   analyzing: ['analyzed', 'translating', 'failed'],
   analyzed: ['translating', 'failed'],
-  translating: ['verifying', 'failed'],
+  translating: ['translated', 'verifying', 'failed'],
+  translated: ['translating', 'verifying', 'failed'],
   verifying: ['debugging', 'shadow', 'failed'],
   debugging: ['verifying', 'shadow', 'failed'],
   shadow: ['debugging', 'ready_for_cutover', 'failed'],
@@ -49,7 +51,7 @@ const NEXT_STATUS: Record<string, readonly string[]> = {
 // Longer than one Nemotron call (170 s) plus a Docker build, with headroom.
 const STALL_MICROS = 15n * 60n * 1_000_000n;
 // Statuses where the run is waiting on purpose, so no activity is expected.
-const WAITING_STATUSES: readonly string[] = ['analyzed'];
+const WAITING_STATUSES: readonly string[] = ['analyzed', 'translated'];
 const WATCHDOG_EVERY_MICROS = 60n * 1_000_000n;
 const RULE_STATUSES = ['pending', 'verified', 'fixed', 'unresolved', 'approved'] as const;
 const DISPOSITIONS = ['keep', 'review', 'drop_candidate'] as const;
@@ -219,6 +221,28 @@ const analysis = table(
   }
 );
 
+// Translator output: one row per translated program (or the shared records
+// module) per attempt. attempt 0 = Translator, 1-5 = Debugger.
+const translation = table(
+  { name: 'translation', public: true },
+  {
+    id: t.string().primaryKey(), // `${run_id}:${component}:${attempt}`
+    run_id: t.string().index('btree'),
+    component: t.string(), // legacy path, or "(shared)/records" for the shared module
+    name: t.string(), // program name, e.g. INTEREST
+    attempt: t.u32(),
+    language: t.string(), // target language, e.g. "Python 3.12"
+    file_name: t.string(), // e.g. "interest.py"
+    source: t.string(),
+    sha256: t.string(),
+    check_status: t.string(), // ok | failed | unavailable
+    check_output: t.string(),
+    rule_map: t.string(), // JSON: [{ rule_id, function }]
+    notes: t.string(),
+    created_at: t.timestamp(),
+  }
+);
+
 // Private: only reducers can read it.
 const writer = table(
   { name: 'writer' },
@@ -270,6 +294,7 @@ const spacetimedb = schema(
   debug_attempt,
   agent_event,
   analysis,
+  translation,
   writer,
   run_heartbeat,
   worker_presence,
@@ -668,6 +693,42 @@ export const set_target_language = spacetimedb.reducer(
   }
 );
 
+// 18: Translator output. Same id again replaces the row (re-runs don't fail).
+const CHECK_STATUSES = ['ok', 'failed', 'unavailable'] as const;
+export const add_translation = spacetimedb.reducer(
+  {
+    run_id: t.string(),
+    component: t.string(),
+    name: t.string(),
+    attempt: t.u32(),
+    language: t.string(),
+    file_name: t.string(),
+    source: t.string(),
+    sha256: t.string(),
+    check_status: t.string(),
+    check_output: t.string(),
+    rule_map: t.string(),
+    notes: t.string(),
+  },
+  (ctx, a) => {
+    requireWriter(ctx);
+    openRun(ctx, a.run_id);
+    checkAttempt(a.attempt);
+    nonEmpty('component', a.component);
+    nonEmpty('file_name', a.file_name);
+    oneOf('check_status', a.check_status, CHECK_STATUSES);
+    try {
+      JSON.parse(a.rule_map);
+    } catch {
+      throw new SenderError('rule_map must be valid JSON');
+    }
+    const id = `${a.run_id}:${a.component}:${a.attempt}`;
+    const row = { id, ...a, created_at: ctx.timestamp };
+    if (ctx.db.translation.id.find(id)) ctx.db.translation.id.update(row);
+    else ctx.db.translation.insert(row);
+  }
+);
+
 // 17: permanently deletes one run and every row that belongs to it, plus its
 // program row when no other run uses that program. Writer-only. Works on
 // finished and unfinished runs.
@@ -683,6 +744,7 @@ export const delete_run = spacetimedb.reducer({ run_id: t.string() }, (ctx, { ru
   ctx.db.code_version.run_id.delete(run_id);
   ctx.db.change.run_id.delete(run_id);
   ctx.db.debug_attempt.run_id.delete(run_id);
+  ctx.db.translation.run_id.delete(run_id);
   ctx.db.run_heartbeat.run_id.delete(run_id);
   ctx.db.run.id.delete(run_id);
   let shared = false;

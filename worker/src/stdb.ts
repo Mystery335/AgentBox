@@ -151,6 +151,13 @@ export class Stdb {
   addAnalysis = (runId: string, kind: 'system' | 'inventory' | 'component' | 'runtime', key: string, json: unknown) =>
     this.call('add_analysis', runId, kind, key, JSON.stringify(json));
   setTargetLanguage = (runId: string, targetLanguage: string) => this.call('set_target_language', runId, targetLanguage);
+  addTranslation = (t: {
+    runId: string; component: string; name: string; attempt: number; language: string; fileName: string;
+    source: string; sha256: string; checkStatus: 'ok' | 'failed' | 'unavailable'; checkOutput: string;
+    ruleMap: { rule_id: string; function: string }[]; notes: string;
+  }) =>
+    this.call('add_translation', t.runId, t.component, t.name, t.attempt, t.language, t.fileName, t.source, t.sha256,
+      t.checkStatus, t.checkOutput, JSON.stringify(t.ruleMap), t.notes);
   /** Permanently deletes a run and all its rows (and its program if unused). */
   deleteRun = (runId: string) => this.call('delete_run', runId);
 }

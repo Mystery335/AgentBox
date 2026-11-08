@@ -6,6 +6,17 @@ import { readFile } from 'node:fs/promises';
 import { dockerizeZip, DockerizeError } from './dockerize.ts';
 import { runLocked } from './docker.ts';
 import { analyzeZip } from './analyzer/index.ts';
+import { contextFromAnalysis, contextFromDb, translateRun, type TranslateRunResult } from './translator/index.ts';
+
+/** Prints a Translator summary; returns 1 if any program failed. */
+function printTranslation(t: TranslateRunResult): number {
+  console.log(`\ntranslation for run ${t.runId} -> ${t.targetLanguage}`);
+  if (t.shared) console.log(`  shared module: static check ${t.shared.check.status}`);
+  for (const p of t.programs) {
+    console.log(`  ${p.name.padEnd(10)} ${p.fileName.padEnd(16)} ${p.error ? `FAILED: ${p.error.slice(0, 120)}` : `check ${p.result!.check.status}, ${p.result!.ruleMap.length} rules mapped`}`);
+  }
+  return t.programs.some(p => p.error) ? 1 : 0;
+}
 import { Stdb } from './stdb.ts';
 
 async function main(argv: string[]): Promise<number> {
@@ -56,7 +67,30 @@ async function main(argv: string[]): Promise<number> {
     console.log(`programs: ${r.components.length}, verifiable: ${v.join(', ') || 'none'}`);
     console.log(`rules: ${r.components.reduce((n, x) => n + x.ruleIds.length, 0)}${failed.length ? `, analysis failed for: ${failed.join(', ')}` : ''}`);
     if (r.system) console.log(`target: ${r.system.target_language} (${r.system.target_runtime}); first slice: ${r.system.first_slice.join(', ')}`);
-    return failed.length || !r.system ? 1 : 0;
+    if (!rest.includes('--translate')) return failed.length || !r.system ? 1 : 0;
+
+    // Chained: hand the analysis straight to the Translator.
+    console.log('');
+    const t = await translateRun(contextFromAnalysis(r), {
+      only: flag('--only')?.split(',').filter(Boolean),
+      dryRun: rest.includes('--dry-run'),
+    });
+    return printTranslation(t) || (failed.length ? 1 : 0);
+  }
+
+  if (cmd === 'translate') {
+    const flag = (name: string) => {
+      const i = rest.indexOf(name);
+      return i >= 0 ? rest[i + 1] : undefined;
+    };
+    const runId = rest[0] && !rest[0].startsWith('--') ? rest[0] : undefined;
+    const ctx = await contextFromDb(new Stdb(), runId, flag('--zip'));
+    const t = await translateRun(ctx, {
+      only: flag('--only')?.split(',').filter(Boolean),
+      concurrency: flag('--concurrency') ? Number(flag('--concurrency')) : undefined,
+      dryRun: rest.includes('--dry-run'),
+    });
+    return printTranslation(t);
   }
 
   if (cmd === 'delete-run' && rest[0]) {
@@ -68,7 +102,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]\n  delete-run <run id> [<run id>...]   (permanent)');
+  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run] [--translate]\n  translate [run id] [--zip legacy.zip] [--only NAME,NAME] [--concurrency N] [--dry-run]\n  delete-run <run id> [<run id>...]   (permanent)');
   return 2;
 }
 
