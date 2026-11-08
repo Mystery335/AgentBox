@@ -58,3 +58,14 @@ export function useApproveRule() {
 }
 
 export function useConnectionStatus() { return useSpacetimeDB(); }
+
+/** Validation evidence scoped to a single run. */
+export function useRunTestCases(runId: string) {
+  return useTable(tables.test_case.where(row => row.runId.eq(runId)));
+}
+export function useRunTestResults(runId: string) {
+  return useTable(tables.test_result.where(row => row.runId.eq(runId)));
+}
+export function useRunDebugAttempts(runId: string) {
+  return useTable(tables.debug_attempt.where(row => row.runId.eq(runId)));
+}
