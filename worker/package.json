@@ -1,0 +1,24 @@
+{
+  "name": "agentbox-worker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AgentProof agent worker: dockerizes the legacy system and runs agents",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dockerize": "tsx src/cli.ts dockerize",
+    "run-legacy": "tsx src/cli.ts run",
+    "test": "tsx --test test/*.test.ts",
+    "identity": "tsx src/smoke.ts identity",
+    "smoke": "tsx src/smoke.ts"
+  },
+  "dependencies": {
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/yauzl": "^3.4.0",
+    "tsx": "^4.23.0",
+    "typescript": "~5.9.0"
+  }
+}
