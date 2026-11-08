@@ -1,4 +1,4 @@
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import Button from "./components/Button";
 import Workspace from "./Workspace";
 import "./App.css";
@@ -36,19 +36,9 @@ function App() {
     () => window.location.hash,
   );
   const isWorkspace = route.startsWith("#/workspace");
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [mode, setMode] = useState<"new" | "dashboard">("new");
-  const [files, setFiles] = useState<File[]>([]);
-  const [project, setProject] = useState("Registration service");
-  const [saved, setSaved] = useState(false);
   const open = (next: "new" | "dashboard") => {
-    if (next === "dashboard") {
-      window.location.hash = "/workspace";
-      window.scrollTo(0, 0);
-      return;
-    }
-    setMode(next);
-    dialog.current?.showModal();
+    window.location.hash = next === "new" ? "/workspace/new" : "/workspace";
+    window.scrollTo(0, 0);
   };
   return (
     <>
@@ -58,6 +48,7 @@ function App() {
           activity={route.startsWith("#/workspace/activity")}
           investigation={route.startsWith("#/workspace/validation")}
           documentation={route.startsWith("#/workspace/documentation")}
+          newModernization={route.startsWith("#/workspace/new")}
         />
       ) : (
         <div className="landing">
@@ -223,83 +214,6 @@ function App() {
           </div>
         </div>
       )}
-      <dialog
-        ref={dialog}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) dialog.current?.close();
-        }}
-      >
-        <button
-          className="close"
-          aria-label="Close"
-          onClick={() => dialog.current?.close()}
-        >
-          ×
-        </button>
-        <p className="eyebrow">AGENTBOX / LOCAL PREVIEW</p>
-        <h2>{mode === "new" ? "New modernization" : "Your workspace"}</h2>
-        {mode === "dashboard" ? (
-          <>
-            <p>
-              {saved
-                ? `${project} — draft ready, ${files.length} source file(s) selected.`
-                : "No modernization runs yet. Start by preparing your source files."}
-            </p>
-            <Button onPress={() => setMode("new")}>+ New modernization</Button>
-          </>
-        ) : (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setSaved(true);
-              setMode("dashboard");
-            }}
-          >
-            <label>
-              Project name
-              <input
-                required
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
-              />
-            </label>
-            <label>
-              Original source
-              <input
-                type="file"
-                multiple
-                required
-                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-              />
-            </label>
-            <div className="language-fields">
-              <label>
-                Source language
-                <select>
-                  <option>C</option>
-                  <option>COBOL</option>
-                  <option>C++</option>
-                </select>
-              </label>
-              <label>
-                Target language
-                <select>
-                  <option>Java 21</option>
-                  <option>TypeScript</option>
-                  <option>Python</option>
-                </select>
-              </label>
-            </div>
-            <p className="preview-note">
-              Prepare a local draft. Running AI agents requires a backend
-              connection; files stay in your browser.
-            </p>
-            <button className="button primary" type="submit">
-              Save modernization draft →
-            </button>
-          </form>
-        )}
-      </dialog>
     </>
   );
 }
