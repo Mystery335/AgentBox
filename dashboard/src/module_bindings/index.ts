@@ -43,10 +43,12 @@ import AddRuleReducer from "./add_rule_reducer";
 import AddTestCasesReducer from "./add_test_cases_reducer";
 import AddTestResultsReducer from "./add_test_results_reducer";
 import AddWriterReducer from "./add_writer_reducer";
+import DeleteRunReducer from "./delete_run_reducer";
 import FinishRunReducer from "./finish_run_reducer";
 import HeartbeatReducer from "./heartbeat_reducer";
 import LogEventReducer from "./log_event_reducer";
 import SetDocumentationReducer from "./set_documentation_reducer";
+import SetRuleModernLinesReducer from "./set_rule_modern_lines_reducer";
 import SetRunStatusReducer from "./set_run_status_reducer";
 import SetTargetLanguageReducer from "./set_target_language_reducer";
 import StartRunReducer from "./start_run_reducer";
@@ -251,10 +253,12 @@ const reducersSchema = __reducers(
   __reducerSchema("add_test_cases", AddTestCasesReducer),
   __reducerSchema("add_test_results", AddTestResultsReducer),
   __reducerSchema("add_writer", AddWriterReducer),
+  __reducerSchema("delete_run", DeleteRunReducer),
   __reducerSchema("finish_run", FinishRunReducer),
   __reducerSchema("heartbeat", HeartbeatReducer),
   __reducerSchema("log_event", LogEventReducer),
   __reducerSchema("set_documentation", SetDocumentationReducer),
+  __reducerSchema("set_rule_modern_lines", SetRuleModernLinesReducer),
   __reducerSchema("set_run_status", SetRunStatusReducer),
   __reducerSchema("set_target_language", SetTargetLanguageReducer),
   __reducerSchema("start_run", StartRunReducer),

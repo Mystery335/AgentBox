@@ -638,7 +638,7 @@ export const add_debug_attempt = spacetimedb.reducer(
 
 // 15: Analyzer output. Re-sending the same kind+key replaces the row, so a
 // re-run of one analysis step doesn't fail.
-const ANALYSIS_KINDS = ['system', 'inventory', 'component', 'runtime'] as const;
+const ANALYSIS_KINDS = ['system', 'inventory', 'component', 'runtime', 'verification'] as const;
 export const add_analysis = spacetimedb.reducer(
   { run_id: t.string(), kind: t.string(), key: t.string(), json: t.string() },
   (ctx, { run_id, kind, key, json }) => {
@@ -658,6 +658,19 @@ export const add_analysis = spacetimedb.reducer(
 );
 
 // 16: the Analyzer decides the target language after start_run.
+// The Translator records where each rule lives in the modern code.
+export const set_rule_modern_lines = spacetimedb.reducer(
+  { rule_id: t.string(), modern_start_line: t.u32(), modern_end_line: t.u32() },
+  (ctx, { rule_id, modern_start_line, modern_end_line }) => {
+    requireWriter(ctx);
+    const r = ctx.db.rule.id.find(rule_id);
+    if (!r) throw new SenderError(`unknown rule "${rule_id}"`);
+    openRun(ctx, r.run_id);
+    if (modern_end_line < modern_start_line) throw new SenderError('modern_end_line is before modern_start_line');
+    ctx.db.rule.id.update({ ...r, modern_start_line, modern_end_line });
+  }
+);
+
 export const set_target_language = spacetimedb.reducer(
   { run_id: t.string(), target_language: t.string() },
   (ctx, { run_id, target_language }) => {
