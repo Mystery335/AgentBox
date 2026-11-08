@@ -173,6 +173,23 @@ export class Stdb {
     }
   };
   #noTranslationTable = false;
+  // ---- dashboard jobs (submit is open to anyone; the rest are writer-only)
+  submitJob = (jobId: string, zipName: string, zipBase64: string) => this.call('submit_job', jobId, zipName, zipBase64);
+  claimJob = (jobId: string) => this.call('claim_job', jobId);
+  updateJob = (jobId: string, runId: string, message: string) => this.call('update_job', jobId, runId, message);
+  finishJob = (jobId: string, status: 'done' | 'failed', message: string) => this.call('finish_job', jobId, status, message);
+  workerHeartbeat = (state: 'idle' | 'busy', jobId = '') => this.call('worker_heartbeat', state, jobId);
+
+  /** Identity hex of this client's token (from the JWT's hex_identity claim), or "" if unknown. */
+  get identityHex(): string {
+    try {
+      const claims = JSON.parse(Buffer.from(this.#token.split('.')[1] ?? '', 'base64url').toString('utf8')) as { hex_identity?: string };
+      return (claims.hex_identity ?? '').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
   /** Permanently deletes a run and all its rows (and its program if unused). */
   deleteRun = (runId: string) => this.call('delete_run', runId);
 }

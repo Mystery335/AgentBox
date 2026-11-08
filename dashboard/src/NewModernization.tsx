@@ -1,99 +1,141 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import Button from "./components/Button";
+import { submitJob, useJob, useWorkerState, type Job } from "./jobs";
 import "./NewModernization.css";
 
-const fileKey = (file: File) =>
-  `${file.name}:${file.size}:${file.lastModified}`;
 const fileSize = (bytes: number) =>
-  bytes < 1024
-    ? `${bytes} B`
-    : bytes < 1048576
-      ? `${(bytes / 1024).toFixed(1)} KB`
-      : `${(bytes / 1048576).toFixed(1)} MB`;
+  bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+
+const MAX_ZIP_BYTES = 8 * 1024 * 1024;
+const SAMPLE_URL = "/samples/payroll-cobol.zip";
+const activityUrl = (runId: string) => `#/workspace/activity?run=${encodeURIComponent(runId)}`;
+
+const STEPS = [
+  { agent: "Analyzer", text: "Builds the legacy system in Docker, maps every program, extracts business rules and picks the target language." },
+  { agent: "Verifier", text: "Designs test inputs and records what the original program really outputs." },
+  { agent: "Translator", text: "Rewrites each verifiable program, checks it compiles and matches the recorded examples." },
+  { agent: "Verifier + Debugger", text: "Compares old and new output on every test, fixes differences (never seeing the holdout tests), then re-runs to confirm." },
+];
+
+function WorkerBanner({ worker }: { worker: ReturnType<typeof useWorkerState> }) {
+  if (worker.missingTables)
+    return (
+      <p className="nm-worker is-offline" role="status">
+        The database has no job tables yet. Republish the module (scripts/publish.ps1) to enable Start modernization.
+      </p>
+    );
+  if (worker.online === undefined) return <p className="nm-worker" role="status">Checking for a worker…</p>;
+  if (!worker.online)
+    return (
+      <p className="nm-worker is-offline" role="status">
+        No worker is online. On the laptop, run <code>npm run demo</code> (or <code>cd worker</code>, then <code>npm run serve</code>), then try again.
+      </p>
+    );
+  if (worker.busy || worker.activeJob)
+    return (
+      <p className="nm-worker is-busy" role="status">
+        The worker is busy with {worker.activeJob ? `${worker.activeJob.zipName}` : "another modernization"}.{" "}
+        {worker.activeJob?.runId ? <a href={activityUrl(worker.activeJob.runId)}>Watch it live</a> : "Start when it has finished."}
+      </p>
+    );
+  return <p className="nm-worker is-online" role="status">● Worker online and ready</p>;
+}
+
+function JobProgress({ job, jobId }: { job?: Job; jobId: string }) {
+  const status = job?.status ?? "queued";
+  const label = { queued: "Waiting for the worker", running: "Running", done: "Finished: every tested case matches", failed: "Finished with failures" }[status];
+  return (
+    <section className={`nm-progress is-${status}`} aria-live="polite">
+      <p className="eyebrow">MODERNIZATION {jobId.toUpperCase()}</p>
+      <h2>{label}</h2>
+      <p>{job?.message || "Uploaded. The worker picks the job up within a few seconds."}</p>
+      {job?.runId ? (
+        <a className="button primary" href={activityUrl(job.runId)}>
+          Open live agent activity &nbsp;→
+        </a>
+      ) : (
+        <p className="nm-progress-wait">The live view opens as soon as the Analyzer has started the run.</p>
+      )}
+    </section>
+  );
+}
 
 export default function NewModernization() {
-  const [project, setProject] = useState("Registration service");
-  const [files, setFiles] = useState<File[]>([]);
-  const [source, setSource] = useState("C");
-  const [target, setTarget] = useState("Java 21");
+  const [zip, setZip] = useState<File>();
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [jobId, setJobId] = useState<string>();
   const input = useRef<HTMLInputElement>(null);
   const dropZone = useRef<HTMLDivElement>(null);
-  const projectInput = useRef<HTMLInputElement>(null);
-  const confirmation = useRef<HTMLDialogElement>(null);
-  const addFiles = (incoming: File[]) => {
-    const valid = incoming.filter((file) => file.size > 0);
-    setError(
-      valid.length !== incoming.length
-        ? "Empty files were skipped. Choose source files or a project ZIP with content."
-        : "",
-    );
-    setFiles((current) => {
-      const merged = new Map(current.map((file) => [fileKey(file), file]));
-      valid.forEach((file) => merged.set(fileKey(file), file));
-      return [...merged.values()];
-    });
-  };
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!project.trim()) {
-      setError("Enter a project name.");
-      projectInput.current?.focus();
-      return;
+  const worker = useWorkerState();
+  const { job } = useJob(jobId);
+
+  // Follow the run live as soon as the Analyzer has created it.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (job?.runId && !opened.current) {
+      opened.current = true;
+      window.setTimeout(() => (window.location.hash = activityUrl(job.runId)), 1200);
     }
-    if (!files.length) {
-      setError("Choose at least one source file or project ZIP.");
+  }, [job?.runId]);
+
+  const choose = (files: File[]) => {
+    const f = files[0];
+    if (!f) return;
+    if (files.length > 1) return setError("Choose one ZIP file with the whole legacy project.");
+    if (!/\.zip$/i.test(f.name)) return setError(`${f.name} is not a ZIP file. Zip the legacy project folder first.`);
+    if (f.size === 0) return setError(`${f.name} is empty.`);
+    if (f.size > MAX_ZIP_BYTES) return setError(`${f.name} is ${fileSize(f.size)}; the limit is 8 MB.`);
+    setError("");
+    setZip(f);
+  };
+
+  const loadSample = async () => {
+    try {
+      const res = await fetch(SAMPLE_URL);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      choose([new File([await res.blob()], "payroll-cobol.zip", { type: "application/zip" })]);
+    } catch (e) {
+      setError(`Could not load the sample: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const canStart = !!zip && worker.online === true && !worker.busy && !worker.activeJob && !worker.missingTables && !submitting;
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!zip) {
+      setError("Choose the legacy project ZIP first.");
       dropZone.current?.focus();
       return;
     }
+    if (!canStart) return;
+    setSubmitting(true);
     setError("");
-    confirmation.current?.showModal();
+    try {
+      setJobId(await submitJob(zip));
+    } catch (e) {
+      setError(`Could not start: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setSubmitting(false);
+    }
   };
-  const downloadDraft = () => {
-    const draft = {
-      project: project.trim(),
-      sourceLanguage: source,
-      targetLanguage: target,
-      status: "draft",
-      files: files.map((file) => ({
-        name: file.name,
-        size: file.size,
-        lastModified: file.lastModified,
-      })),
-      execution: "Not started. Backend connection required.",
-    };
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "agentbox-modernization-draft.json";
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+
+  if (jobId) return (
+    <>
+      <h1 className="nm-title">Modernizing {job?.zipName ?? zip?.name}</h1>
+      <JobProgress job={job} jobId={jobId} />
+    </>
+  );
+
   return (
     <>
       <h1 className="nm-title">Bring your legacy code forward.</h1>
-      <p className="nm-intro">
-        Upload source files, choose a target language, then review the agents’
-        work.
-      </p>
+      <p className="nm-intro">Upload the legacy project as a ZIP. The agents analyze it, translate it and prove the new code behaves the same.</p>
       <form className="nm-form" onSubmit={submit}>
-        <h2>1. Project details</h2>
-        <label className="nm-project-label" htmlFor="nm-project">
-          Project name
-        </label>
-        <input
-          id="nm-project"
-          ref={projectInput}
-          value={project}
-          onChange={(event) => setProject(event.target.value)}
-          required
-          aria-invalid={!!error && !project.trim()}
-        />
-        <h2>2. Original source</h2>
+        <WorkerBanner worker={worker} />
+        <h2>1. Legacy project</h2>
         <div
           className={`nm-dropzone ${dragging ? "is-dragging" : ""}`}
           ref={dropZone}
@@ -107,110 +149,64 @@ export default function NewModernization() {
             setDragging(true);
           }}
           onDragLeave={(event) => {
-            if (
-              !event.currentTarget.contains(event.relatedTarget as Node | null)
-            )
-              setDragging(false);
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
           }}
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            addFiles(Array.from(event.dataTransfer.files));
+            choose(Array.from(event.dataTransfer.files));
           }}
         >
-          <h3 id="nm-upload-title">
-            ↑ &nbsp;Drop source files or a project ZIP here
-          </h3>
-          {!files.length ? (
-            <p id="nm-upload-help">
-              Example input: registration.c and supporting source files
-            </p>
+          <h3 id="nm-upload-title">↑ &nbsp;Drop the project ZIP here</h3>
+          {!zip ? (
+            <p id="nm-upload-help">One .zip of the legacy project (up to 8 MB). A Dockerfile is optional: one is generated if missing.</p>
           ) : (
             <div className="nm-selected" aria-live="polite">
-              <p id="nm-upload-help">
-                {files.length} {files.length === 1 ? "file" : "files"} selected
-                · {fileSize(files.reduce((sum, file) => sum + file.size, 0))}
-              </p>
               <ul>
-                {files.map((file) => (
-                  <li key={fileKey(file)}>
-                    <span title={file.name}>{file.name}</span>
-                    <small>{fileSize(file.size)}</small>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${file.name}`}
-                      onClick={() =>
-                        setFiles((current) =>
-                          current.filter(
-                            (item) => fileKey(item) !== fileKey(file),
-                          ),
-                        )
-                      }
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
+                <li>
+                  <span title={zip.name}>{zip.name}</span>
+                  <small>{fileSize(zip.size)}</small>
+                  <button type="button" aria-label={`Remove ${zip.name}`} onClick={() => setZip(undefined)}>
+                    ×
+                  </button>
+                </li>
               </ul>
             </div>
           )}
-          <button
-            type="button"
-            className="nm-browse"
-            onClick={() => input.current?.click()}
-          >
-            Browse files
-          </button>
+          <div className="nm-pick">
+            <button type="button" className="nm-browse" onClick={() => input.current?.click()}>
+              Browse
+            </button>
+            <button type="button" className="nm-browse" onClick={() => void loadSample()}>
+              Use the sample (payroll-cobol.zip)
+            </button>
+          </div>
           <input
             type="file"
             ref={input}
-            multiple
+            accept=".zip,application/zip"
             className="nm-file-input"
             tabIndex={-1}
-            aria-label="Source files"
+            aria-label="Legacy project ZIP"
             onChange={(event) => {
-              addFiles(Array.from(event.target.files ?? []));
+              choose(Array.from(event.target.files ?? []));
               event.target.value = "";
             }}
           />
         </div>
-        <h2>3. Migration path</h2>
-        <div className="nm-languages">
-          <label>
-            Source language
-            <span className={`nm-select ${source !== "C" ? "nm-long-value" : ""}`}>
-              <select
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-              >
-                <option>C</option>
-                <option>COBOL</option>
-                <option>C++</option>
-              </select>
-              <span aria-hidden="true">▾</span>
-            </span>
-          </label>
-          <label>
-            Target language
-            <span className={`nm-select ${target !== "Java 21" ? "nm-long-value" : ""}`}>
-              <select
-                value={target}
-                onChange={(event) => setTarget(event.target.value)}
-              >
-                <option>Java 21</option>
-                <option>TypeScript</option>
-                <option>Python</option>
-              </select>
-              <span aria-hidden="true">▾</span>
-            </span>
-          </label>
-        </div>
+        <h2>2. What the agents will do</h2>
+        <ol className="nm-steps">
+          {STEPS.map((s) => (
+            <li key={s.agent}>
+              <strong>{s.agent}</strong> {s.text}
+            </li>
+          ))}
+        </ol>
         <p className="nm-isolation-note">
-          Source remains read-only. Generated code runs in an isolated
-          workspace.
+          The Analyzer detects the source language and chooses the target. Legacy and generated code run in locked-down containers with no network.
         </p>
-        <button className="button primary nm-submit" type="submit">
-          Start modernization &nbsp;→
+        <button className="button primary nm-submit" type="submit" disabled={!canStart} aria-disabled={!canStart}>
+          {submitting ? "Uploading…" : "Start modernization"} &nbsp;→
         </button>
         {error && (
           <p id="nm-form-error" className="nm-error" role="alert">
@@ -218,55 +214,6 @@ export default function NewModernization() {
           </p>
         )}
       </form>
-      <dialog
-        ref={confirmation}
-        className="nm-confirmation"
-        aria-labelledby="nm-confirmation-title"
-        onClick={(event) => {
-          if (event.target === event.currentTarget)
-            confirmation.current?.close();
-        }}
-      >
-        <button
-          className="close"
-          aria-label="Close draft summary"
-          onClick={() => confirmation.current?.close()}
-        >
-          ×
-        </button>
-        <p className="eyebrow">NEW MODERNIZATION / LOCAL DRAFT</p>
-        <h2 id="nm-confirmation-title">Modernization draft ready</h2>
-        <dl>
-          <dt>Project</dt>
-          <dd>{project.trim()}</dd>
-          <dt>Migration</dt>
-          <dd>
-            {source} → {target}
-          </dd>
-          <dt>Original source</dt>
-          <dd>
-            {files.length} {files.length === 1 ? "file" : "files"} ·{" "}
-            {fileSize(files.reduce((sum, file) => sum + file.size, 0))}
-          </dd>
-        </dl>
-        <p>
-          No agents have run. Connect a backend to execute this draft. Your
-          source files remain in this browser and have not been uploaded.
-        </p>
-        <div className="nm-confirmation-actions">
-          <Button onPress={downloadDraft}>Download draft</Button>
-          <Button
-            variant="secondary"
-            onPress={() => confirmation.current?.close()}
-          >
-            Continue editing
-          </Button>
-        </div>
-        <p className="nm-draft-note">
-          The download contains project settings and file metadata. Source file
-          contents are not included.
-        </p>
-      </dialog>
     </>
   );
 }

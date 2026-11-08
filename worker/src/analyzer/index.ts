@@ -21,6 +21,8 @@ export interface AnalyzeOptions {
   dryRun?: boolean;
   concurrency?: number;
   log?: (msg: string) => void;
+  /** Called as soon as the run exists in SpacetimeDB (e.g. to link a dashboard job to it). */
+  onRunStarted?: (runId: string) => void | Promise<void>;
 }
 
 export interface AnalyzeResult {
@@ -77,6 +79,7 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
   const manifest = JSON.stringify({ zip: bundle.zipPath.split(/[\\/]/).pop(), root: scan.root, files: scan.inventory.map(f => f.path) });
   await db.addProgram(bundle.zipSha256, name, primary, '', manifest);
   await db.startRun(runId, name, primary, '', bundle.zipSha256, bundle.legacyRuntime, '');
+  await opts.onRunStarted?.(runId);
   // Heartbeats during the compile probe and the Nemotron loops (watchdog: 15 min).
   const stopBeat = db.keepAlive(runId);
   try {

@@ -99,3 +99,51 @@ describe('rule -> modern line ranges', async () => {
     assert.equal(examplesBlock([]), '');
   });
 });
+
+describe('hygieneProblem', async () => {
+  const { hygieneProblem } = await import('../src/translator/agent.ts');
+  const { pickTarget } = await import('../src/translator/targets.ts');
+  const py = pickTarget('Python 3.12').profile;
+  it('accepts clean code', () => {
+    assert.equal(hygieneProblem('import sys\n\n# BR-01: fee\ndef main():\n    return 0\n\n\nif __name__ == "__main__":\n    sys.exit(main())\n', py), undefined);
+  });
+  it('rejects test code that starts processes', () => {
+    assert.match(hygieneProblem('import subprocess\nsubprocess.run(["x"])\n', py)!, /starts other processes/);
+  });
+  it('rejects code after the __main__ block', () => {
+    assert.match(hygieneProblem('def main():\n    return 0\n\nif __name__ == "__main__":\n    main()\n\nprint("test")\n', py)!, /after the if __name__/);
+  });
+  it('rejects files that are mostly reasoning comments', () => {
+    const src = Array.from({ length: 60 }, (_, i) => `# hmm, let me think about step ${i}`).join('\n') + '\nx = 1\n';
+    assert.match(hygieneProblem(src, py)!, /are comments/);
+  });
+});
+
+describe('analyzerBrief', async () => {
+  const { analyzerBrief } = await import('../src/translator/agent.ts');
+  it('passes every Analyzer finding, flags review/drop rules', () => {
+    const brief = analyzerBrief({
+      path: 'src/PAY.cob', name: 'PAY', lines: 10, includes: [], fileIO: [{ name: 'EMP', assign: 'EMP.DAT', organization: 'LINE' }], takesParameters: false,
+      summary: 'Computes pay.', inputs: [{ name: 'stdin', description: 'employee lines' }], outputs: [{ name: 'stdout', description: 'pay lines' }],
+      risks: ['packed decimal'], dataLayouts: [{ name: 'EMP-REC', defined_in: 'EMPREC.cpy', description: '80-byte record' }],
+      modernizationNotes: 'Use Decimal.', system: { targetReasons: ['exact decimals'], architecture: 'batch' },
+      rules: [
+        { id: 'r:BR-01', title: 'Overtime', given: 'g', when: 'w', then: 't', start: 1, end: 2, disposition: 'keep' },
+        { id: 'r:BR-02', title: 'Odd cap', given: 'g', when: 'w', then: 't', start: 3, end: 4, disposition: 'review', dispositionReason: 'cap looks wrong' },
+      ],
+    });
+    for (const s of ['Computes pay.', 'EMP-REC (EMPREC.cpy)', 'Use Decimal.', 'exact decimals', 'batch', 'EMP -> EMP.DAT (line)', 'packed decimal']) assert.ok(brief.includes(s), s);
+    assert.match(brief, /r:BR-02 "Odd cap".*\[Analyzer marked REVIEW: cap looks wrong\]/);
+    assert.doesNotMatch(brief, /r:BR-01.*Analyzer marked/);
+    assert.match(brief, /still get implemented exactly/);
+  });
+});
+
+describe('serve', async () => {
+  const { uploadName } = await import('../src/serve.ts');
+  it('makes a safe local file name for an uploaded zip', () => {
+    assert.equal(uploadName('job-1', 'payroll-cobol.zip'), 'job-1-payroll-cobol.zip');
+    assert.equal(uploadName('job-2', String.raw`..\..\evil name.zip`), 'job-2-evil_name.zip');
+    assert.equal(uploadName('job-3', 'noext'), 'job-3-noext.zip');
+  });
+});

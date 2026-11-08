@@ -1,0 +1,8 @@
+{
+  "name": "agentbox",
+  "private": true,
+  "description": "AgentProof: legacy modernization agents. `npm run demo` starts the dashboard and the worker together.",
+  "scripts": {
+    "demo": "node scripts/demo.mjs"
+  }
+}

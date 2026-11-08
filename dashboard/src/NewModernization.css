@@ -258,3 +258,21 @@
 .nm-confirmation::backdrop{background:#080f22bb}
 .nm-confirmation .close{float:right;background:transparent;color:#f2e6ee;border:0;font-size:24px}
 @media(max-width:650px){.nm-languages{grid-template-columns:1fr;gap:18px}.nm-main .nm-form{padding:18px}.nm-dropzone{padding:20px}.nm-dropzone h3{font-size:16px}.nm-selected{flex-direction:column;max-height:none}.nm-selected ul{flex:none;width:100%;max-height:140px}.nm-main .nm-title{font-size:24px}.nm-confirmation dl{grid-template-columns:1fr}}
+
+/* Start modernization: worker status, steps, progress */
+.nm-worker{margin:0;padding:10px 14px;border-radius:10px;border:1px solid #4b5077;background:#192747;color:#c9bbdc;font-size:13px;line-height:1.5}
+.nm-worker code{font-family:"Roboto Mono",monospace;background:#0c142a;padding:1px 6px;border-radius:4px;color:#f2e6ee}
+.nm-worker.is-online{border-color:#3f6b4a;color:#d6f3b3;background:#1c2f26}
+.nm-worker.is-busy{border-color:#7a6236;color:#f1cc8a;background:#2b2418}
+.nm-worker.is-offline{border-color:#7a3a46;color:#ffa7ae;background:#2c1820}
+.nm-worker a{color:inherit;text-decoration:underline}
+.nm-pick{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.nm-steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;color:#c9bbdc;font-size:13px;line-height:1.55}
+.nm-steps strong{color:#f2e6ee;margin-right:4px}
+.nm-submit:disabled{opacity:.5;cursor:not-allowed}
+.nm-progress{display:flex;flex-direction:column;gap:12px;align-items:flex-start;max-width:760px;padding:24px;border:1px solid #4b5077;border-radius:14px;background:#192747}
+.nm-progress h2{margin:0;color:#f2e6ee;font-size:20px}
+.nm-progress p{margin:0;color:#c9bbdc;line-height:1.6}
+.nm-progress.is-done{border-color:#3f6b4a}
+.nm-progress.is-failed{border-color:#7a3a46}
+.nm-progress-wait{font-size:12px}

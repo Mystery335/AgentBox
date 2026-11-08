@@ -243,6 +243,53 @@ const translation = table(
   }
 );
 
+// Modernization jobs started from the dashboard. The dashboard uploads a
+// legacy zip (submit_job); a worker on the laptop (npm run serve) claims the
+// job, runs Analyzer -> Translator -> Verifier -> Debugger, links the run so
+// the dashboard can follow it live, and finishes the job.
+const JOB_STATUSES = ['queued', 'running', 'done', 'failed'] as const;
+const job = table(
+  { name: 'job', public: true },
+  {
+    id: t.string().primaryKey(),
+    zip_name: t.string(),
+    zip_bytes: t.u32(),
+    status: t.string(),
+    run_id: t.string(), // "" until the Analyzer has started the run
+    message: t.string(),
+    requested_by: t.string(), // identity hex of the dashboard user
+    worker: t.string(), // identity hex of the worker that claimed it
+    created_at: t.timestamp(),
+    started_at: t.option(t.timestamp()),
+    finished_at: t.option(t.timestamp()),
+  }
+);
+
+// Liveness of `npm run serve` workers. They talk to SpacetimeDB over HTTP (no
+// long-lived connection), so client_connected presence can't tell whether one
+// is running: each worker calls worker_heartbeat every 15 s instead. The
+// dashboard treats a worker as offline after ~45 s without a heartbeat.
+const worker_status = table(
+  { name: 'worker_status', public: true },
+  {
+    identity_hex: t.string().primaryKey(),
+    state: t.string(), // idle | busy
+    job_id: t.string(), // "" when idle
+    last_seen: t.timestamp(),
+  }
+);
+
+// The uploaded zip (base64), kept apart from `job` so dashboard subscriptions
+// to jobs don't download it. Public so the worker can read it over SQL; the
+// row is deleted when the job finishes.
+const job_zip = table(
+  { name: 'job_zip', public: true },
+  {
+    job_id: t.string().primaryKey(),
+    data: t.string(),
+  }
+);
+
 // Private: only reducers can read it.
 const writer = table(
   { name: 'writer' },
@@ -295,6 +342,9 @@ const spacetimedb = schema(
   agent_event,
   analysis,
   translation,
+  job,
+  job_zip,
+  worker_status,
   writer,
   run_heartbeat,
   worker_presence,
@@ -703,6 +753,82 @@ export const set_target_language = spacetimedb.reducer(
     nonEmpty('target_language', target_language);
     const r = openRun(ctx, run_id);
     ctx.db.run.id.update({ ...r, target_language });
+  }
+);
+
+// 19-22: dashboard jobs. Anyone with the dashboard may submit (it has no
+// writer token), so submissions are limited: a .zip name, at most ~8 MB, and
+// only one job queued or running at a time. Claiming, linking and finishing
+// are writer-only (the worker).
+const MAX_ZIP_BASE64 = 11_200_000; // ~8 MB of zip data
+export const submit_job = spacetimedb.reducer(
+  { job_id: t.string(), zip_name: t.string(), zip_base64: t.string() },
+  (ctx, { job_id, zip_name, zip_base64 }) => {
+    nonEmpty('job_id', job_id);
+    if (!/^[\w.-]{1,80}$/.test(job_id)) throw new SenderError('job_id may only contain letters, digits, ".", "_" and "-"');
+    if (!/\.zip$/i.test(zip_name)) throw new SenderError('upload a .zip file');
+    if (zip_base64.length === 0) throw new SenderError('the zip is empty');
+    if (zip_base64.length > MAX_ZIP_BASE64) throw new SenderError('the zip is larger than 8 MB');
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(zip_base64)) throw new SenderError('zip_base64 is not valid base64');
+    if (ctx.db.job.id.find(job_id)) throw new SenderError(`job "${job_id}" already exists`);
+    for (const j of ctx.db.job.iter()) {
+      if (j.status === 'queued' || j.status === 'running') throw new SenderError(`job ${j.id} is still ${j.status}; wait for it to finish`);
+    }
+    ctx.db.job.insert({
+      id: job_id,
+      zip_name: zip_name.slice(0, 200),
+      zip_bytes: Math.floor((zip_base64.length * 3) / 4),
+      status: 'queued',
+      run_id: '',
+      message: 'Waiting for a worker',
+      requested_by: ctx.sender.toHexString(),
+      worker: '',
+      created_at: ctx.timestamp,
+      started_at: undefined,
+      finished_at: undefined,
+    });
+    ctx.db.job_zip.insert({ job_id, data: zip_base64 });
+  }
+);
+
+export const worker_heartbeat = spacetimedb.reducer({ state: t.string(), job_id: t.string() }, (ctx, { state, job_id }) => {
+  requireWriter(ctx);
+  oneOf('state', state, ['idle', 'busy']);
+  const identity_hex = ctx.sender.toHexString();
+  const row = { identity_hex, state, job_id, last_seen: ctx.timestamp };
+  if (ctx.db.worker_status.identity_hex.find(identity_hex)) ctx.db.worker_status.identity_hex.update(row);
+  else ctx.db.worker_status.insert(row);
+});
+
+export const claim_job = spacetimedb.reducer({ job_id: t.string() }, (ctx, { job_id }) => {
+  requireWriter(ctx);
+  const j = ctx.db.job.id.find(job_id);
+  if (!j) throw new SenderError(`unknown job "${job_id}"`);
+  if (j.status !== 'queued') throw new SenderError(`job ${job_id} is ${j.status}, not queued`);
+  ctx.db.job.id.update({ ...j, status: 'running', worker: ctx.sender.toHexString(), message: 'Starting the Analyzer', started_at: ctx.timestamp });
+});
+
+export const update_job = spacetimedb.reducer(
+  { job_id: t.string(), run_id: t.string(), message: t.string() },
+  (ctx, { job_id, run_id, message }) => {
+    requireWriter(ctx);
+    const j = ctx.db.job.id.find(job_id);
+    if (!j) throw new SenderError(`unknown job "${job_id}"`);
+    if (j.status !== 'running') throw new SenderError(`job ${job_id} is ${j.status}, not running`);
+    ctx.db.job.id.update({ ...j, run_id: run_id || j.run_id, message: message.slice(0, 500) });
+  }
+);
+
+export const finish_job = spacetimedb.reducer(
+  { job_id: t.string(), status: t.string(), message: t.string() },
+  (ctx, { job_id, status, message }) => {
+    requireWriter(ctx);
+    oneOf('status', status, ['done', 'failed']);
+    const j = ctx.db.job.id.find(job_id);
+    if (!j) throw new SenderError(`unknown job "${job_id}"`);
+    if (j.status === 'done' || j.status === 'failed') throw new SenderError(`job ${job_id} is already ${j.status}`);
+    ctx.db.job.id.update({ ...j, status, message: message.slice(0, 1000), finished_at: ctx.timestamp });
+    ctx.db.job_zip.job_id.delete(job_id); // the zip is no longer needed
   }
 );
 
