@@ -47,6 +47,7 @@ async function main(argv: string[]): Promise<number> {
     const r = await analyzeZip(rest[0], {
       only: flag('--only')?.split(',').filter(Boolean),
       concurrency: flag('--concurrency') ? Number(flag('--concurrency')) : undefined,
+      dryRun: rest.includes('--dry-run'),
     });
     const v = r.components.filter(x => x.c.verifiable).map(x => x.c.name);
     const failed = r.components.filter(x => x.error).map(x => x.c.name);
@@ -57,7 +58,7 @@ async function main(argv: string[]): Promise<number> {
     return failed.length || !r.system ? 1 : 0;
   }
 
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N]');
+  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]');
   return 2;
 }
 

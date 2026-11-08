@@ -14,6 +14,8 @@ import { probeCompile } from './runtime.ts';
 export interface AnalyzeOptions {
   /** Only run the LLM on these program names (others still get scanned). */
   only?: string[];
+  /** Run everything (Docker, scan, Nemotron) but skip all database writes. */
+  dryRun?: boolean;
   concurrency?: number;
   log?: (msg: string) => void;
 }
@@ -45,6 +47,8 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
   const say = opts.log ?? ((m: string) => console.log(m));
   const db = new Stdb();
   if (!process.env.STDB_TOKEN) throw new Error('STDB_TOKEN is empty in AgentBox/.env (see scripts/README.md)');
+  // Dry run: reducer calls become no-ops; Nemotron (a procedure) still runs.
+  if (opts.dryRun) db.call = async () => {};
 
   const runId = `run-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}-${randomBytes(2).toString('hex')}`;
   let seq = 0;
