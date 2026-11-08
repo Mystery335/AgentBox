@@ -148,8 +148,9 @@ export class Stdb {
   logEvent = (eventId: string, runId: string, agent: string, message: string) =>
     this.call('log_event', eventId, runId, agent, message);
   finishRun = (runId: string, status: string) => this.call('finish_run', runId, status);
-  addAnalysis = (runId: string, kind: 'system' | 'inventory' | 'component' | 'runtime', key: string, json: unknown) =>
+  addAnalysis = (runId: string, kind: 'system' | 'inventory' | 'component' | 'runtime' | 'verification', key: string, json: unknown) =>
     this.call('add_analysis', runId, kind, key, JSON.stringify(json));
+  setRuleModernLines = (ruleId: string, start: number, end: number) => this.call('set_rule_modern_lines', ruleId, start, end);
   setTargetLanguage = (runId: string, targetLanguage: string) => this.call('set_target_language', runId, targetLanguage);
   /** Permanently deletes a run and all its rows (and its program if unused). */
   deleteRun = (runId: string) => this.call('delete_run', runId);

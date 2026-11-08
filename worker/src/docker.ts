@@ -65,9 +65,18 @@ export function normalize(text: string): string {
 export async function runLocked(
   image: string,
   command: string[] = [],
-  opts: { stdin?: string; timeoutMs?: number; mounts?: { host: string; container: string }[] } = {}
+  opts: {
+    stdin?: string;
+    timeoutMs?: number;
+    mounts?: { host: string; container: string }[];
+    /** Lets /tmp hold compiled binaries (exec, 512 MB). Everything else stays locked down. */
+    execTmp?: boolean;
+  } = {}
 ): Promise<ExecResult> {
   const mountArgs = (opts.mounts ?? []).flatMap(m => ['-v', `${m.host}:${m.container}:ro`]);
-  const r = await docker(['run', ...LOCKDOWN_FLAGS, ...mountArgs, image, ...command], opts);
+  const flags = opts.execTmp
+    ? LOCKDOWN_FLAGS.map(f => (f === '/tmp' ? '/tmp:rw,exec,nosuid,size=512m' : f))
+    : LOCKDOWN_FLAGS;
+  const r = await docker(['run', ...flags, ...mountArgs, image, ...command], opts);
   return { ...r, stdout: normalize(r.stdout) };
 }
