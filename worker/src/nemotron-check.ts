@@ -24,23 +24,30 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  // With reasoning on (the default): thinking tokens count against max_tokens.
   const t0 = Date.now();
   const chat = await db.nemotronChat({
     messages: [
       { role: 'system', content: 'You answer with JSON only.' },
       { role: 'user', content: 'Return {"language": "<name>"} for this code: IDENTIFICATION DIVISION. PROGRAM-ID. PAY.' },
     ],
-    max_tokens: 200,
+    max_tokens: 4000,
     temperature: 0,
   });
-  const content = chat.choices?.[0]?.message?.content ?? '';
-  console.log(`PASS  nemotron_chat  (${Date.now() - t0} ms) -> ${content.trim().slice(0, 200)}`);
-  return 0;
+  const c = chat.choices?.[0];
+  const content = (c?.message?.content ?? '').trim();
+  const reasoning = chat.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+  console.log(`${content ? 'PASS' : 'FAIL'}  nemotron_chat  (${Date.now() - t0} ms, ${reasoning} reasoning tokens, finish=${c?.finish_reason}) -> ${content.slice(0, 200)}`);
+  return content ? 0 : 1;
 }
 
+// Set exitCode instead of calling process.exit(): exiting while fetch's
+// sockets are closing trips a libuv assertion on Windows.
 main()
-  .then(code => process.exit(code))
+  .then(code => {
+    process.exitCode = code;
+  })
   .catch(e => {
     console.error(`FAIL  ${e instanceof Error ? e.message : e}`);
-    process.exit(1);
+    process.exitCode = 1;
   });

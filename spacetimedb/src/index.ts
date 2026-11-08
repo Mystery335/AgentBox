@@ -539,6 +539,9 @@ export const nemotron_ping = spacetimedb.procedure(t.string(), ctx => {
     messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
     max_tokens: 16,
     temperature: 0,
+    // Nemotron 3.5 is a reasoning model; thinking tokens count against
+    // max_tokens, so turn it off for this tiny check.
+    chat_template_kwargs: { enable_thinking: false },
   });
   let reply = '';
   if (r.status === 200) {
@@ -555,6 +558,9 @@ export const nemotron_ping = spacetimedb.procedure(t.string(), ctx => {
  * Chat completion for the agents. `request_json` is an OpenAI-style request
  * body (messages, tools, temperature, max_tokens, ...); `model` defaults to
  * NEMOTRON_MODEL or nemotron-3.5-lightning. Returns NVIDIA's response JSON.
+ * The model reasons before answering (message.reasoning_content) and those
+ * tokens count against max_tokens: give it room (2000+), or pass
+ * chat_template_kwargs: { enable_thinking: false } for quick calls.
  */
 export const nemotron_chat = spacetimedb.procedure({ request_json: t.string() }, t.string(), (ctx, { request_json }) => {
   requireWriterProc(ctx);

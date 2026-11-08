@@ -83,11 +83,18 @@ export class Stdb {
 
   // ---- Nemotron (runs inside the module; the API key never leaves SpacetimeDB)
   nemotronPing = () => this.callProcedure('nemotron_ping');
-  /** OpenAI-style chat request; returns NVIDIA's response JSON (parsed). */
+  /**
+   * OpenAI-style chat request; returns NVIDIA's response JSON (parsed).
+   * Nemotron 3.5 reasons first and those tokens count against max_tokens, so
+   * use a large max_tokens (2000+) or chat_template_kwargs: { enable_thinking: false }.
+   */
   nemotronChat = async (request: { messages: unknown[]; [k: string]: unknown }) =>
     JSON.parse(await this.callProcedure('nemotron_chat', JSON.stringify(request))) as {
-      choices: { message: { role: string; content: string | null; tool_calls?: unknown[] } }[];
-      usage?: Record<string, number>;
+      choices: {
+        finish_reason: string;
+        message: { role: string; content: string | null; reasoning_content?: string; tool_calls?: unknown[] };
+      }[];
+      usage?: { prompt_tokens: number; completion_tokens: number; completion_tokens_details?: { reasoning_tokens?: number } };
     };
 
   /** Runs SQL; returns rows keyed by column name. */
