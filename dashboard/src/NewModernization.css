@@ -266,7 +266,6 @@
 .nm-worker.is-busy{border-color:#7a6236;color:#f1cc8a;background:#2b2418}
 .nm-worker.is-offline{border-color:#7a3a46;color:#ffa7ae;background:#2c1820}
 .nm-worker a{color:inherit;text-decoration:underline}
-.nm-pick{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
 .nm-steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;color:#c9bbdc;font-size:13px;line-height:1.55}
 .nm-steps strong{color:#f2e6ee;margin-right:4px}
 .nm-submit:disabled{opacity:.5;cursor:not-allowed}

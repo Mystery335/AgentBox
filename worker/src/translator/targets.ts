@@ -32,7 +32,112 @@ export interface TargetProfile {
   run(file: string): string;
   /** Language-specific rules for the generated code. */
   conventions: string;
+  /**
+   * Fixed "base" section of the shared module (clock, COBOL number helpers).
+   * When set, it is used as-is instead of asking Nemotron to write one: faster,
+   * identical every run, and smaller prompts for every later agent turn.
+   */
+  baseTemplate?: string;
 }
+
+/** Python base section of records.py: the helpers every translated program may use. */
+const PYTHON_BASE = `"""Shared helpers for translated COBOL programs (records.py, base section).
+
+Generated from a fixed template. Copybook layouts follow in their own sections.
+"""
+import os
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, getcontext
+
+getcontext().prec = 34
+
+
+def cob_now() -> datetime:
+    """Current date/time. Honours COB_CURRENT_DATE ("YYYY/MM/DD hh:mm:ss" or
+    "YYYYMMDDhhmmss"), the same variable GnuCOBOL uses, so tests can pin it."""
+    raw = os.environ.get("COB_CURRENT_DATE", "").strip()
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y%m%d%H%M%S", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    return datetime.now()
+
+
+def accept_date() -> str:
+    """ACCEPT ... FROM DATE (YYMMDD)."""
+    return cob_now().strftime("%y%m%d")
+
+
+def accept_date_yyyymmdd() -> str:
+    """ACCEPT ... FROM DATE YYYYMMDD."""
+    return cob_now().strftime("%Y%m%d")
+
+
+def accept_time() -> str:
+    """ACCEPT ... FROM TIME (HHMMSSss)."""
+    now = cob_now()
+    return now.strftime("%H%M%S") + f"{now.microsecond // 10000:02d}"
+
+
+def cob_truncate(value: Decimal, places: int) -> Decimal:
+    """MOVE / COMPUTE without ROUNDED: drop extra decimals (toward zero)."""
+    return Decimal(value).quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN)
+
+
+def cob_round(value: Decimal, places: int) -> Decimal:
+    """COMPUTE ... ROUNDED: half away from zero."""
+    return Decimal(value).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def fit_digits(value: Decimal, int_digits: int, places: int) -> Decimal:
+    """Store into PIC 9(int_digits)V9(places): truncate decimals and drop
+    high-order digits that don't fit (COBOL size truncation, no ON SIZE ERROR)."""
+    v = cob_truncate(value, places)
+    limit = Decimal(10) ** int_digits
+    sign = -1 if v < 0 else 1
+    return sign * (abs(v) % limit)
+
+
+def display_unsigned(value: Decimal, int_digits: int, places: int = 0) -> str:
+    """DISPLAY of PIC 9(int_digits)V9(places): zero-padded digits, no point."""
+    v = fit_digits(abs(Decimal(value)), int_digits, places)
+    return f"{int(v * (Decimal(10) ** places)):0{int_digits + places}d}"
+
+
+def edit_z(value: Decimal, z_digits: int, places: int = 0) -> str:
+    """Edited picture Z(z_digits)9[.9(places)], e.g. Z(4)9 or Z(6)9.99:
+    fixed width, leading zeros become spaces, the last integer digit always
+    prints. Unsigned (the sign is dropped, as COBOL does for these pictures)."""
+    v = fit_digits(abs(Decimal(value)), z_digits + 1, places)
+    text = f"{v:.{places}f}" if places else f"{int(v)}"
+    width = z_digits + 1 + (places + 1 if places else 0)
+    return text.rjust(width)
+
+
+def to_decimal(text: str, places: int = 0) -> Decimal:
+    """Unsigned DISPLAY digits with an implied decimal point (PIC 9(n)V9(places))."""
+    return Decimal(int(text)) / (Decimal(10) ** places)
+
+
+def is_numeric(text: str) -> bool:
+    """COBOL IS NUMERIC for an unsigned DISPLAY field: digits only, not empty."""
+    return text != "" and text.isdigit()
+
+
+def pic_x(text: str, width: int) -> str:
+    """PIC X(width): pad with spaces or cut to width."""
+    return text[:width].ljust(width)
+
+
+__all__ = [
+    "Decimal", "ROUND_DOWN", "ROUND_HALF_UP", "dataclass", "sys",
+    "cob_now", "accept_date", "accept_date_yyyymmdd", "accept_time",
+    "cob_truncate", "cob_round", "fit_digits", "display_unsigned", "edit_z",
+    "to_decimal", "is_numeric", "pic_x",
+]`;
 
 const lower = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, '_');
 const pascal = (n: string) => n.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join('');
@@ -60,7 +165,9 @@ const PYTHON: TargetProfile = {
 - COBOL truncates on MOVE/COMPUTE unless ROUNDED (truncate toward zero: ROUND_DOWN); ROUNDED is half away from zero (ROUND_HALF_UP).
 - Records: dataclasses with parse(line) / format() for fixed-width layouts, imported from records.py (from records import ...).
 - Read stdin with sys.stdin; write with sys.stdout.write or print. Exit codes with sys.exit(n).
-- Entry point: def main() -> int, and at the bottom: if __name__ == "__main__": sys.exit(main())`,
+- Entry point: def main() -> int, and at the bottom: if __name__ == "__main__": sys.exit(main())
+- records.py already has: cob_now, accept_date, accept_time, cob_truncate, cob_round, fit_digits, display_unsigned, edit_z (Z(n)9.99 pictures), to_decimal, is_numeric, pic_x. Use them instead of rewriting them.`,
+  baseTemplate: PYTHON_BASE,
 };
 
 const JAVA: TargetProfile = {

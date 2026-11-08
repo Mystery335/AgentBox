@@ -56,6 +56,13 @@ export interface ProgramToTranslate {
   system?: { targetReasons: string[]; architecture: string };
 }
 
+/**
+ * Rule id as shown to the model: without the run id ("PAYCALC:BR-03"), so
+ * prompts are identical across runs of the same zip and a repeat run can be
+ * replayed from the Nemotron cache. Answers are mapped back to full ids.
+ */
+export const shortRuleId = (id: string) => id.replace(/^run-[^:]+:/, '');
+
 /** The Analyzer's findings for one program, formatted for the Translator. Exported for tests. */
 export function analyzerBrief(p: ProgramToTranslate): string {
   const parts = [
@@ -73,7 +80,7 @@ export function analyzerBrief(p: ProgramToTranslate): string {
     `Business rules to implement (${p.rules.length}), one function each:`,
     ...p.rules.map(r => {
       const flag = r.disposition && r.disposition !== 'keep' ? ` [Analyzer marked ${r.disposition.toUpperCase().replace('_', ' ')}${r.dispositionReason ? `: ${r.dispositionReason}` : ''}]` : '';
-      return `- ${r.id} "${r.title}" [legacy lines ${r.start}-${r.end}]: given ${r.given}; when ${r.when}; then ${r.then}${flag}`;
+      return `- ${shortRuleId(r.id)} "${r.title}" [legacy lines ${r.start}-${r.end}]: given ${r.given}; when ${r.when}; then ${r.then}${flag}`;
     }),
     p.rules.some(r => r.disposition && r.disposition !== 'keep')
       ? 'Rules marked REVIEW or DROP CANDIDATE still get implemented exactly as the legacy code behaves (outputs must match); say in "notes" what looked wrong or unused, for a human to decide.'
@@ -91,8 +98,8 @@ export interface TranslationResult {
   llm: LlmStats;
   /** Shared module only: code per section ("base" and one per include, by base name). */
   sections?: Record<string, string>;
-  /** Program only: whether the submitted code matched every legacy example, and how often run_examples ran. */
-  examples?: { matched: boolean; total: number; runs: number };
+  /** Program only: whether the submitted code matched the legacy program on every input the Translator tried. */
+  comparisons?: { matched: boolean; tried: number; runs: number };
 }
 
 export interface TranslateEnv {
@@ -331,14 +338,14 @@ function handler(
   gate: CheckGate,
   ownFiles: string[],
   readOnly: string[] = [],
-  runner?: ExampleRunner,
+  runner?: LegacyComparer,
   /** Legacy files whose full text is already in the instructions (re-reading them is refused). */
   shownInFull: string[] = []
 ) {
   let searchStreak = 0;
   let exploreSinceWrite = 0;
   const writeNow = (why: string) =>
-    `${why} You already have what you need in your instructions. Write the file now with write_section (one section per call), then check_code${runner?.available ? ' and run_examples' : ''}, then submit.`;
+    `${why} You already have what you need in your instructions. Write the file now with write_section (one section per call), then check_code${runner?.available ? ' and compare_with_legacy' : ''}, then submit.`;
   return async (name: string, a: Record<string, unknown>): Promise<string> => {
     searchStreak = name === 'search_legacy' ? searchStreak + 1 : 0;
     if (name === 'read_legacy_file' || name === 'search_legacy') {
@@ -368,10 +375,11 @@ function handler(
         return file.view();
       case 'check_code':
         return file.sections.size ? gate.check(file.source) : 'The file is empty.';
-      case 'run_examples': {
-        if (!runner?.available) return 'No examples are available for this program.';
-        if (!file.sections.size) return 'The file is empty.';
-        return (await runner.run(file.source)).report;
+      case 'compare_with_legacy': {
+        if (!runner?.available) return 'The legacy program cannot be run for this program.';
+        if (!file.sections.size) return 'The file is empty: write it first, then compare.';
+        const inputs = Array.isArray(a.inputs) ? (a.inputs as unknown[]).map(String) : typeof a.inputs === 'string' ? [a.inputs] : [];
+        return (await runner.compare(file.source, inputs)).report;
       }
       default:
         throw new Error(`unknown tool ${name}`);
@@ -379,14 +387,14 @@ function handler(
   };
 }
 
-const WORKFLOW = `How to work (each of your replies must stay short: at most one or two sections per reply):
-1. Read what you need with read_legacy_file / search_legacy.
-2. Build the file with write_section, one section per call: imports/constants first, then the functions, then main.
+const WORKFLOW = `How to work (keep each reply under ~300 lines of code in total):
+1. Read what you need with read_legacy_file / search_legacy (often nothing: the source is in your instructions).
+2. Build the file with write_section: one section per part (imports/constants, one per rule function, main). Make SEVERAL write_section calls in the same reply (e.g. all rule functions at once) instead of one per reply: it is much faster.
 3. Call check_code. If it reports errors, rewrite only the section each error names (write_section with the same name replaces it) and check again.
-4. If you have the run_examples tool, call it once check_code is OK: it runs your code on real inputs and shows where your output differs from the legacy program. Fix those sections and run it again until every example matches.
+4. If you have the compare_with_legacy tool, use it once check_code is OK: pick a few inputs (a normal case, edge cases from the business rules, an invalid record), run the ORIGINAL program and yours on them, and fix every difference. Compare again until they all match.
 5. Then call the submit tool. (Submitting re-checks the file if you changed it.)
 Keep your thinking brief: decide, then make the tool call.
-The file is production code: short comments that name the rule or explain a legacy quirk. Never write your reasoning, notes to yourself or test code into the file; use run_examples to test.`;
+The file is production code: short comments that name the rule or explain a legacy quirk. Never write your reasoning, notes to yourself or test code into the file; use compare_with_legacy to test.`;
 
 /**
  * Production-code hygiene for a submitted program file: no process-spawning
@@ -395,13 +403,13 @@ The file is production code: short comments that name the rule or explain a lega
  */
 export function hygieneProblem(source: string, profile: TargetProfile): string | undefined {
   if (/^\s*(import\s+subprocess|from\s+subprocess\s+import)|require\(\s*['"](node:)?child_process['"]\s*\)|\bos\.system\s*\(|Runtime\.getRuntime\(\)\.exec|\bexec\.Command\s*\(/m.test(source)) {
-    return 'the file starts other processes (test code?). Remove it: use run_examples to test your code';
+    return 'the file starts other processes (test code?). Remove it: use compare_with_legacy to test your code';
   }
   const lines = source.split('\n');
   if (profile.id === 'python') {
     const guard = lines.findIndex(l => /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/.test(l));
     if (guard >= 0 && lines.slice(guard + 1).some(l => /^\S/.test(l) && !l.startsWith('#'))) {
-      return 'there is code after the if __name__ == "__main__": block. Remove it (test code belongs in run_examples, not the file)';
+      return 'there is code after the if __name__ == "__main__": block. Remove it (test with compare_with_legacy, not in the file)';
     }
   }
   const nonBlank = lines.filter(l => l.trim()).length;
@@ -412,28 +420,68 @@ export function hygieneProblem(source: string, profile: TargetProfile): string |
   return undefined;
 }
 
+/** How to build and run the ORIGINAL legacy program in its own image (no network, read-only). */
+export interface LegacySpec {
+  image: string;
+  build: string;
+  run: string;
+  mounts: { host: string; container: string }[];
+  cwd: string;
+}
+
+const MAX_PROBE_INPUTS = 5;
+const MAX_TRIED = 12;
+
 /**
- * Runs the program being written on the real legacy examples (Verifier debug
- * cases, never holdout) in the target sandbox and reports, line by line, where
- * its output differs. Lets the Translator fix formatting slips before the
- * Verifier and Debugger ever see the code.
+ * The Translator's own window on the original program. It picks inputs, runs
+ * the LEGACY program and its current code on them in the sandbox, and sees
+ * the legacy output plus a line diff. The Verifier designs its tests later and
+ * independently, so the Translator never sees (or tunes to) the real test set.
  */
-export class ExampleRunner {
+export class LegacyComparer {
   runs = 0;
-  /** Submissions bounced because examples still differed. */
+  /** Submissions bounced because the code still differed from legacy. */
   bounces = 0;
+  /** Inputs the Translator tried, re-checked at submit. */
+  readonly tried: string[] = [];
   readonly passed = new Set<string>();
-  private readonly cfg: { profile: TargetProfile; image: string; workDir: string; fileName: string; shared: { fileName: string; source: string }; examples: Example[] };
-  constructor(cfg: ExampleRunner['cfg']) {
+  private readonly legacyOut = new Map<string, string>();
+  private readonly cfg: { profile: TargetProfile; image: string; workDir: string; fileName: string; shared: { fileName: string; source: string }; legacy?: LegacySpec };
+  constructor(cfg: LegacyComparer['cfg']) {
     this.cfg = cfg;
   }
   get available(): boolean {
-    return this.cfg.examples.length > 0;
+    return !!this.cfg.legacy;
   }
-  async run(source: string): Promise<{ ok: number; total: number; report: string }> {
+
+  /** Legacy outputs for the inputs (cached: the legacy program is deterministic). */
+  private async legacyOutputs(inputs: string[]): Promise<void> {
+    const todo = inputs.filter(i => !this.legacyOut.has(i));
+    if (!todo.length || !this.cfg.legacy) return;
+    const l = this.cfg.legacy;
+    const res = await runBatch({
+      image: l.image,
+      build: l.build,
+      run: l.run,
+      workDir: path.join(this.cfg.workDir, 'legacy-probe'),
+      mounts: l.mounts,
+      cwd: l.cwd,
+      cases: todo.map((stdin, i) => ({ id: String(i + 1).padStart(2, '0'), stdin })),
+    });
+    todo.forEach((input, i) => {
+      const r = res.cases.get(String(i + 1).padStart(2, '0'));
+      this.legacyOut.set(input, !res.built ? '[legacy program did not build]' : r ? (r.timedOut ? '[legacy program hung]' : canonical(r.stdout, r.exitCode)) : '[no result]');
+    });
+  }
+
+  async compare(source: string, rawInputs: string[]): Promise<{ ok: number; total: number; report: string }> {
     const c = this.cfg;
+    const inputs = [...new Set(rawInputs.map(s => String(s)).filter(s => s.length <= 4000))].slice(0, MAX_PROBE_INPUTS);
+    if (!inputs.length) return { ok: 0, total: 0, report: 'Give 1-5 stdin inputs (each up to 4000 characters) in "inputs".' };
     this.runs++;
-    const codeDir = path.join(c.workDir, 'examples', 'code');
+    for (const i of inputs) if (!this.tried.includes(i) && this.tried.length < MAX_TRIED) this.tried.push(i);
+    await this.legacyOutputs(inputs);
+    const codeDir = path.join(c.workDir, 'probe', 'code');
     await rm(codeDir, { recursive: true, force: true });
     await mkdir(codeDir, { recursive: true });
     await writeFile(path.join(codeDir, c.shared.fileName), c.shared.source);
@@ -442,36 +490,55 @@ export class ExampleRunner {
       image: c.image,
       build: c.profile.build(c.fileName),
       run: c.profile.run(c.fileName),
-      workDir: path.join(c.workDir, 'examples'),
+      workDir: path.join(c.workDir, 'probe'),
       mounts: [{ host: codeDir, container: '/work' }],
-      cases: c.examples.map((e, i) => ({ id: String(i + 1).padStart(2, '0'), stdin: e.input })),
+      cases: inputs.map((stdin, i) => ({ id: String(i + 1).padStart(2, '0'), stdin })),
     });
-    if (!res.built) return { ok: 0, total: c.examples.length, report: `The code does not build:\n${res.buildLog.slice(0, 2000)}` };
     let ok = 0;
-    const parts: string[] = [];
-    c.examples.forEach((e, i) => {
+    const parts = inputs.map((input, i) => {
+      const expected = this.legacyOut.get(input) ?? '[no result]';
       const r = res.cases.get(String(i + 1).padStart(2, '0'));
-      const actual = r ? canonical(r.stdout, r.exitCode) : '[no result]';
-      if (actual === e.expected) {
+      const actual = !res.built ? '[your code did not build]' : r ? canonical(r.stdout, r.exitCode) : '[no result]';
+      const legacyLines = expected.split('\n').map(l => `  ${JSON.stringify(l)}`).join('\n');
+      if (actual === expected) {
         ok++;
-        parts.push(`Example ${i + 1}: matches`);
-      } else {
-        parts.push(`Example ${i + 1}: DIFFERS (stdin ${JSON.stringify(e.input.slice(0, 200))})\n${lineDiff(e.expected, actual)}${r?.stderr.trim() ? `\nstderr: ${r.stderr.trim().slice(0, 600)}` : ''}`);
+        return `Input ${i + 1} ${JSON.stringify(input.slice(0, 200))}: MATCHES the legacy program.`;
       }
+      return `Input ${i + 1} ${JSON.stringify(input.slice(0, 200))}: DIFFERS.\nLegacy output:\n${legacyLines}\nDifferences:\n${lineDiff(expected, actual)}${r?.stderr.trim() ? `\nstderr: ${r.stderr.trim().slice(0, 600)}` : ''}`;
     });
-    if (ok === c.examples.length) this.passed.add(sha(source));
-    return { ok, total: c.examples.length, report: `${ok}/${c.examples.length} examples match the legacy output.\n${parts.join('\n')}` };
+    const buildNote = res.built ? '' : `Your code does not build:\n${res.buildLog.slice(0, 1500)}\n`;
+    return { ok, total: inputs.length, report: `${buildNote}${ok}/${inputs.length} inputs match the legacy program.\n${parts.join('\n')}` };
+  }
+
+  /** At submit: re-runs every input tried so far against the current code. */
+  async recheck(source: string): Promise<{ ok: number; total: number; report: string }> {
+    const all = [...this.tried];
+    let ok = 0;
+    const reports: string[] = [];
+    for (let i = 0; i < all.length; i += MAX_PROBE_INPUTS) {
+      const r = await this.compare(source, all.slice(i, i + MAX_PROBE_INPUTS));
+      ok += r.ok;
+      reports.push(r.report);
+    }
+    if (ok === all.length) this.passed.add(sha(source));
+    return { ok, total: all.length, report: reports.join('\n') };
   }
 }
 
-const RUN_EXAMPLES_TOOL: ToolDef = {
-  name: 'run_examples',
-  description: 'Run your file as it is now on the real legacy examples, in the sandbox. Shows which examples match and, for the others, the first differing lines (JSON-quoted so spaces are visible).',
-  parameters: { type: 'object', properties: {} },
+const COMPARE_TOOL: ToolDef = {
+  name: 'compare_with_legacy',
+  description:
+    'Run the ORIGINAL legacy program and your file as it is now on the same stdin input(s), in the sandbox. Shows the legacy output (JSON-quoted so spaces are visible) and where yours differs. ' +
+    'Use it to learn exact output formats and to check edge cases. Inputs must follow the format the legacy program reads (fixed columns, terminator lines such as END).',
+  parameters: {
+    type: 'object',
+    properties: { inputs: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: MAX_PROBE_INPUTS, description: 'Complete stdin texts, e.g. "E0001040012345\\nEND\\n"' } },
+    required: ['inputs'],
+  },
 };
 
 /** After this many bounced submissions the code is accepted anyway; the Verifier and Debugger take over. */
-const MAX_EXAMPLE_BOUNCES = 3;
+const MAX_COMPARE_BOUNCES = 3;
 
 // ------------------------------------------------------ shared module
 // Built in pieces so every agent task stays small, whatever the number of
@@ -592,7 +659,17 @@ Keep it under ~200 lines. Record layouts are NOT your job; other tasks add them 
     validate: (code: string) => (/COB_CURRENT_DATE/.test(code) ? undefined : 'the base section must include the clock helper that honours COB_CURRENT_DATE'),
   });
   // Everything depends on the base: retry once without reasoning before giving up.
-  const base = await writeSharedPart(env, baseSpec()).catch(() => writeSharedPart({ ...env, thinking: false }, baseSpec()));
+  // A fixed template when the target has one (instant, identical every run,
+  // short prompts later); otherwise Nemotron writes it.
+  const base: SharedPart = env.profile.baseTemplate
+    ? {
+        name: 'base',
+        code: env.profile.baseTemplate,
+        symbols: [...env.profile.baseTemplate.matchAll(/^def (\w+)/gm)].map(m => m[1]),
+        notes: 'base section from the fixed template',
+        llm: sumStats([]),
+      }
+    : await writeSharedPart(env, baseSpec()).catch(() => writeSharedPart({ ...env, thinking: false }, baseSpec()));
   opts.onPart?.('base', base);
 
   // 2. One task per include.
@@ -673,7 +750,8 @@ export async function translateProgram(
   env: TranslateEnv,
   p: ProgramToTranslate,
   shared: { fileName: string; source: string; sections?: Record<string, string> },
-  examples: Example[] = []
+  /** How to run the original program, for compare_with_legacy (omit when it can't be run). */
+  legacy?: LegacySpec
 ): Promise<TranslationResult> {
   const fileName = env.profile.fileName(p.name);
   const workDir = path.join(env.workRoot, p.name);
@@ -711,17 +789,16 @@ ${WORKFLOW}`;
   const user = [
     `Program: ${p.name} (${p.path}, ${p.lines} lines). Target file: ${fileName}. Run as: ${env.profile.run(fileName)}`,
     analyzerBrief(p),
-    examplesBlock(examples),
     `Shared module ${shared.fileName} (the parts this program uses):\n${relevantShared(shared, p)}`,
     `Legacy source:\n${await env.view.numbered(p.path, 1, 400)}`,
   ].join('\n\n');
   const ruleIds = new Set(p.rules.map(r => r.id));
-  const runner = new ExampleRunner({ profile: env.profile, image: env.image, workDir, fileName, shared, examples });
+  const runner = new LegacyComparer({ profile: env.profile, image: env.image, workDir, fileName, shared, legacy });
   const r = await runToolLoop({
     db: env.db,
     system,
     user,
-    tools: [...READ_TOOLS, ...fileTools(fileName), ...(runner.available ? [RUN_EXAMPLES_TOOL] : []), SUBMIT],
+    tools: [...READ_TOOLS, ...fileTools(fileName), ...(runner.available ? [COMPARE_TOOL] : []), SUBMIT],
     // The instructions show the first 400 lines of the program: for shorter
     // programs that is all of it, so re-reading it is refused.
     handle: handler(env, file, gate, [fileName, shared.fileName], [], runner, p.lines <= 400 ? [p.path] : []),
@@ -730,7 +807,7 @@ ${WORKFLOW}`;
       if (file.source.trim().length < 50) return 'the file is empty: write it with write_section first';
       const map = Array.isArray(a.rule_map) ? (a.rule_map as Record<string, unknown>[]) : [];
       const mapped = new Set(map.map(m => String(m?.rule_id ?? '')));
-      const missing = [...ruleIds].filter(id => !mapped.has(id) && !mapped.has(id.split(':').pop()!));
+      const missing = [...ruleIds].filter(id => !mapped.has(id) && !mapped.has(shortRuleId(id)) && !mapped.has(id.split(':').pop()!));
       if (ruleIds.size > 0 && missing.length > ruleIds.size / 2) return `rule_map is missing most rules: ${missing.slice(0, 8).join(', ')}`;
       const undefinedFns = map.map(m => String(m?.function ?? '')).filter(fn => fn && !definesFunction(file.source, fn));
       if (undefinedFns.length) return `rule_map names functions that are not in the file: ${undefinedFns.slice(0, 8).join(', ')}. Write them (write_section) or fix rule_map`;
@@ -738,13 +815,20 @@ ${WORKFLOW}`;
       if (dirty) return dirty;
       const compile = await gate.gate(file.source);
       if (compile) return compile;
-      // Behaviour on the real examples: bounce a few times with the diff, then
-      // hand over to the Verifier/Debugger anyway.
-      if (runner.available && !runner.passed.has(sha(file.source)) && runner.bounces < MAX_EXAMPLE_BOUNCES) {
-        const res = await runner.run(file.source);
-        if (res.ok < res.total) {
+      // Behaviour against the original program: insist on at least one
+      // comparison, re-check every input tried, bounce a few times with the
+      // diff, then hand over to the Verifier/Debugger anyway.
+      if (runner.available && runner.bounces < MAX_COMPARE_BOUNCES) {
+        if (runner.tried.length === 0) {
           runner.bounces++;
-          return `the code compiles, but its output differs from the legacy program on real inputs. ${res.report.slice(0, 3000)}`;
+          return 'before submitting, use compare_with_legacy on at least two inputs (a normal case and an edge case) to check your output against the original program';
+        }
+        if (!runner.passed.has(sha(file.source))) {
+          const res = await runner.recheck(file.source);
+          if (res.ok < res.total) {
+            runner.bounces++;
+            return `the code compiles, but on ${res.total - res.ok} of the ${res.total} inputs you tried its output differs from the original program. ${res.report.slice(0, 3000)}`;
+          }
         }
       }
       return undefined;
@@ -765,6 +849,6 @@ ${WORKFLOW}`;
       const full = ruleIds.has(id) ? id : [...ruleIds].find(x => x.endsWith(`:${id}`)) ?? id;
       return { rule_id: full, function: String(m.function) };
     });
-  const examplesResult = runner.available ? { matched: runner.passed.has(sha(source)), total: examples.length, runs: runner.runs } : undefined;
-  return { source, sha256: sha(source), check, ruleMap, notes: str(r.answer.notes), llm: stats(r), examples: examplesResult };
+  const comparisons = runner.available ? { matched: runner.passed.has(sha(source)), tried: runner.tried.length, runs: runner.runs } : undefined;
+  return { source, sha256: sha(source), check, ruleMap, notes: str(r.answer.notes), llm: stats(r), comparisons };
 }

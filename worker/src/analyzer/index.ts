@@ -13,6 +13,7 @@ const llmNote = (l?: LlmStats) =>
   l ? `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens (${l.reasoning_tokens.toLocaleString('en-US')} reasoning)${l.cached_turns ? `, ${l.cached_turns}/${l.turns} turns from cache` : ''}` : 'no model call (empty file)';
 import { decideVerifiability, scanProject, type Component, type ScanResult } from './scan.ts';
 import { probeCompile } from './runtime.ts';
+import { targetProfile } from '../translator/targets.ts';
 
 export interface AnalyzeOptions {
   /** Only run the LLM on these program names (others still get scanned). */
@@ -47,6 +48,18 @@ async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Prom
     })
   );
   return out;
+}
+
+/**
+ * TARGET_LANGUAGE (e.g. "Python 3.12") overrides the Analyzer's pick so demo
+ * runs are fast and replay from the cache; unset or "auto" keeps its choice.
+ */
+export function lockTarget(sys: SystemAnalysis, wanted = process.env.TARGET_LANGUAGE?.trim()): void {
+  if (!wanted || /^auto$/i.test(wanted) || wanted.toLowerCase() === sys.target_language.toLowerCase()) return;
+  const was = sys.target_language;
+  sys.target_language = wanted;
+  sys.target_runtime = targetProfile(wanted).defaultImage;
+  sys.target_reasons = [`Target locked to ${wanted} by TARGET_LANGUAGE (the Analyzer suggested ${was}).`, ...sys.target_reasons];
 }
 
 export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Promise<AnalyzeResult> {
@@ -177,6 +190,7 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
       const { system: sys, llm: sysLlm } = await analyzeSystem(db, view, results.filter(r => targets.includes(r.c)), undefined, problem =>
         void event('analyzer', `System decision rejected by validation (${problem.slice(0, 160)}); retrying`)
       );
+      lockTarget(sys);
       result.system = sys;
       result.systemLlm = sysLlm;
       await db.setTargetLanguage(runId, sys.target_language);

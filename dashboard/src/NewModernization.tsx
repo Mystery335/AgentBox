@@ -7,14 +7,13 @@ const fileSize = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
 
 const MAX_ZIP_BYTES = 8 * 1024 * 1024;
-const SAMPLE_URL = "/samples/payroll-cobol.zip";
 const activityUrl = (runId: string) => `#/workspace/activity?run=${encodeURIComponent(runId)}`;
 
 const STEPS = [
   { agent: "Analyzer", text: "Builds the legacy system in Docker, maps every program, extracts business rules and picks the target language." },
-  { agent: "Verifier", text: "Designs test inputs and records what the original program really outputs." },
-  { agent: "Translator", text: "Rewrites each verifiable program, checks it compiles and matches the recorded examples." },
-  { agent: "Verifier + Debugger", text: "Compares old and new output on every test, fixes differences (never seeing the holdout tests), then re-runs to confirm." },
+  { agent: "Translator", text: "Rewrites each verifiable program in the target language and checks that the new code compiles." },
+  { agent: "Verifier", text: "Designs its own test inputs, records what the original program outputs, and compares the new code on every test, including holdout tests no other agent sees." },
+  { agent: "Debugger", text: "Fixes the differences the Verifier found (from the debug tests only), then the Verifier re-runs everything to confirm." },
 ];
 
 function WorkerBanner({ worker }: { worker: ReturnType<typeof useWorkerState> }) {
@@ -91,16 +90,6 @@ export default function NewModernization() {
     setZip(f);
   };
 
-  const loadSample = async () => {
-    try {
-      const res = await fetch(SAMPLE_URL);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      choose([new File([await res.blob()], "payroll-cobol.zip", { type: "application/zip" })]);
-    } catch (e) {
-      setError(`Could not load the sample: ${e instanceof Error ? e.message : e}`);
-    }
-  };
-
   const canStart = !!zip && worker.online === true && !worker.busy && !worker.activeJob && !worker.missingTables && !submitting;
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -173,14 +162,9 @@ export default function NewModernization() {
               </ul>
             </div>
           )}
-          <div className="nm-pick">
-            <button type="button" className="nm-browse" onClick={() => input.current?.click()}>
-              Browse
-            </button>
-            <button type="button" className="nm-browse" onClick={() => void loadSample()}>
-              Use the sample (payroll-cobol.zip)
-            </button>
-          </div>
+          <button type="button" className="nm-browse" onClick={() => input.current?.click()}>
+            Browse for the ZIP
+          </button>
           <input
             type="file"
             ref={input}

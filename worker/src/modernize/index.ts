@@ -1,15 +1,15 @@
-// Modernize stage: continues an "analyzed" run for EVERY verifiable program:
+// Modernize stage: continues an "analyzed" run for EVERY verifiable program,
+// in the order Analyzer -> Translator -> Verifier -> Debugger:
 //
-//   Verifier (part 1)  Nemotron designs test inputs per program; the LEGACY
-//                      program runs on them in its Docker image to record the
-//                      golden outputs; cases are split debug / holdout.
-//   Translator         one shared records module (copybooks), then every
-//                      program in sections with a sandbox compile/lint gate,
-//                      shown real legacy outputs from DEBUG cases (never holdout).
-//   Verifier (part 2)  runs the modern program on all cases in a locked-down
-//                      container; outputs and exit codes must match.
-//   Debugger           sees only failing DEBUG cases; up to 5 attempts.
-//   Shadow             re-runs passing code in a fresh container (stability).
+//   Translator  one shared records module (copybooks), then every program in
+//               sections with a sandbox compile/lint gate. Translation only:
+//               it never runs the program (fast); behaviour is checked next.
+//   Verifier    then designs its OWN test inputs (independent of the
+//               Translator), records the legacy outputs, splits debug /
+//               holdout, and runs the modern program on all cases in a
+//               locked-down container; outputs and exit codes must match.
+//   Debugger    sees only failing DEBUG cases; up to 5 attempts.
+//   Shadow      re-runs passing code in a fresh container (stability).
 //
 // Everything goes to SpacetimeDB (status, translations, test cases/results,
 // changes, debug attempts, rule status/lines, events) for the dashboard.
@@ -22,7 +22,7 @@ import path from 'node:path';
 import { AGENTBOX_ROOT, dockerizeZip, type LegacyBundle } from '../dockerize.ts';
 import { LEGACY_DIR, shq } from '../analyzer/runtime.ts';
 import { Stdb, type Row } from '../stdb.ts';
-import { relevantShared, ruleRanges, type Example, type TranslationResult } from '../translator/agent.ts';
+import { relevantShared, ruleRanges, type LegacySpec, type TranslationResult } from '../translator/agent.ts';
 import { contextFromDb, translateRun } from '../translator/index.ts';
 import { ensureTargetImage, NORMALIZATION_POLICY, pickTarget, type TargetProfile } from '../translator/targets.ts';
 import { debugFix, loadLegacyContext, writeTests, type Failure, type GeneratedCase, type LegacyContext, type ModernTarget, type RuleRow, type StoredComponent } from './agents.ts';
@@ -31,7 +31,7 @@ import { canonical, runBatch, type BatchResult, type CaseInput } from './sandbox
 export interface ModernizeOptions {
   /** Program names to modernize (default: every verifiable program). */
   only?: string[];
-  /** Debug attempts after the first translation (0-5). */
+  /** Debug attempts after the first translation (0-5, default 3). */
   maxAttempts?: number;
   log?: (msg: string) => void;
   /** Reuse an already-built bundle (when called right after the Analyzer). */
@@ -116,7 +116,7 @@ export async function modernizeRun(zipPath: string, runId: string, opts: Moderni
   const say = opts.log ?? ((m: string) => console.log(m));
   const db = new Stdb();
   if (!process.env.STDB_TOKEN) throw new Error('STDB_TOKEN is empty in AgentBox/.env (see scripts/README.md)');
-  const maxAttempts = Math.min(Math.max(opts.maxAttempts ?? 5, 0), 5);
+  const maxAttempts = Math.min(Math.max(opts.maxAttempts ?? 3, 0), 5);
 
   let seq = 0;
   const stamp = Date.now().toString(36);
@@ -154,49 +154,65 @@ export async function modernizeRun(zipPath: string, runId: string, opts: Moderni
   const stopBeat = db.keepAlive(runId);
   try {
     await db.setRunStatus(runId, 'translating');
-    await event('verifier', `Modernizing ${chosen.length} verifiable program(s) to ${target.label}${fallback ? ` (target "${run.target_language}" has no sandbox profile, so Python is used)` : ''}: ${chosen.map(c => c.name).join(', ')}`);
+    await event('translator', `Modernizing ${chosen.length} verifiable program(s) to ${target.label}${fallback ? ` (target "${run.target_language}" has no sandbox profile, so Python is used)` : ''}: ${chosen.map(c => c.name).join(', ')}`);
 
-    // 2. Verifier part 1: test inputs and golden outputs, per program.
+    // 2. Translator: shared records module + every program, translation only.
+    // (The legacy build commands are still checked here so a program that
+    // can't be built is skipped before any model call.)
     const outcomes: ProgramOutcome[] = [];
-    const prepared: PreparedProgram[] = [];
-    let index = 0;
-    for (const component of chosen) {
-      const p = await prepareProgram({ db, runId, bundle, component, ruleRows, projectDir, workDir, inventoryRoot: inventory.root, event, firstIndex: index });
-      if ('reason' in p) {
-        outcomes.push(failedOutcome(component, target, p.reason));
-        await event('verifier', `${component.name}: skipped (${p.reason})`);
-        continue;
-      }
-      index += p.cases.length;
-      prepared.push(p);
-      if (component.file_io.length) {
-        await event('verifier', `${component.name} also uses files (${component.file_io.map(f => f.name).join(', ')}); this proof covers its stdin/stdout behaviour only.`);
+    const extraSources = (c: StoredComponent) => c.calls.map(x => x.file).filter((f): f is string => !!f && f !== c.path);
+    const legacy = new Map<string, LegacySpec>();
+    const runnable: StoredComponent[] = [];
+    for (const c of chosen) {
+      try {
+        legacy.set(c.path, {
+          image: bundle.imageTag,
+          build: legacyBuildCommand(c.compile!.command!, extraSources(c)),
+          run: '/tmp/legacy_prog',
+          mounts: [{ host: bundle.extractDir, container: LEGACY_DIR }],
+          cwd: `${LEGACY_DIR}/${inventory.root}`,
+        });
+        runnable.push(c);
+      } catch (e) {
+        outcomes.push(failedOutcome(c, target, e instanceof Error ? e.message : String(e)));
+        await event('translator', `${c.name}: skipped (${e instanceof Error ? e.message : e})`);
       }
     }
-    if (!prepared.length) return finish(db, runId, target, outcomes, event);
-
-    // 3. Translator: shared records module + every prepared program, with real
-    // legacy outputs from DEBUG cases as examples (never holdout).
-    const examples = new Map<string, Example[]>(
-      prepared.map(p => [p.component.path, p.cases.filter(c => c.split === 'debug').slice(0, 4).map(c => ({ input: c.input, expected: c.expected }))])
-    );
+    if (!runnable.length) return finish(db, runId, target, outcomes, event);
     const tctx = await contextFromDb(db, runId, zipPath);
-    const translated = await translateRun(tctx, { only: prepared.map(p => p.component.name), examples, keepStatus: true, log: say });
+    // The Translator only translates (write + compile check); behaviour is
+    // the Verifier's job and fixes are the Debugger's. Pass `legacy` here to
+    // give it compare_with_legacy again (slower, but fewer Debugger rounds).
+    const translated = await translateRun(tctx, { only: runnable.map(c => c.name), keepStatus: true, log: say });
     const image = await ensureTargetImage(target, system?.target_runtime ?? '');
     const shared = translated.shared;
 
-    // 4. Verify -> debug -> shadow, one program at a time.
+    // 3. Verifier: designs its own tests per program (independent of the
+    // Translator), records the legacy outputs, compares; 4. Debugger fixes
+    // failures from DEBUG cases only; then a shadow re-run.
     await db.setRunStatus(runId, 'verifying');
-    for (const [i, p] of prepared.entries()) {
-      const tr = translated.programs.find(x => x.path === p.component.path);
+    let index = 0;
+    let first = true;
+    for (const component of runnable) {
+      const tr = translated.programs.find(x => x.path === component.path);
       if (!tr?.result) {
-        outcomes.push(failedOutcome(p.component, target, `translation failed: ${tr?.error ?? 'no result'}`));
-        await reportVerification(db, runId, p, target, { status: 'failed', reason: `translation failed: ${tr?.error ?? 'no result'}` });
+        outcomes.push(failedOutcome(component, target, `translation failed: ${tr?.error ?? 'no result'}`));
         continue;
       }
+      if (component.file_io.length) {
+        await event('verifier', `${component.name} also uses files (${component.file_io.map(f => f.name).join(', ')}); this proof covers its stdin/stdout behaviour only.`);
+      }
+      const p = await prepareProgram({ db, runId, bundle, component, ruleRows, projectDir, workDir, inventoryRoot: inventory.root, event, firstIndex: index });
+      if ('reason' in p) {
+        outcomes.push(failedOutcome(component, target, p.reason));
+        await event('verifier', `${component.name}: could not be verified (${p.reason})`);
+        continue;
+      }
+      index += p.cases.length;
       outcomes.push(
-        await verifyProgram({ db, runId, p, target, image, shared: shared!, translation: tr.result, file: tr.fileName, maxAttempts, event, workDir, primary: i === 0 })
+        await verifyProgram({ db, runId, p, target, image, shared: shared!, translation: tr.result, file: tr.fileName, maxAttempts, event, workDir, primary: first })
       );
+      first = false;
     }
     return finish(db, runId, target, outcomes, event);
   } finally {

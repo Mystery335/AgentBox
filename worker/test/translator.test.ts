@@ -147,3 +147,57 @@ describe('serve', async () => {
     assert.equal(uploadName('job-3', 'noext'), 'job-3-noext.zip');
   });
 });
+
+describe('run-independent prompts', async () => {
+  const { shortRuleId, analyzerBrief } = await import('../src/translator/agent.ts');
+  const { pickTarget } = await import('../src/translator/targets.ts');
+  it('drops the run id from rule ids shown to the model', () => {
+    assert.equal(shortRuleId('run-20261108155836-3917:PAYCALC:BR-03'), 'PAYCALC:BR-03');
+    assert.equal(shortRuleId('PAYCALC:BR-03'), 'PAYCALC:BR-03');
+    const brief = analyzerBrief({
+      path: 'p.cob', name: 'P', lines: 1, includes: [], fileIO: [], takesParameters: false, summary: 's', inputs: [], outputs: [], risks: [],
+      rules: [{ id: 'run-20261108155836-3917:P:BR-01', title: 't', given: 'g', when: 'w', then: 'x', start: 1, end: 1 }],
+    });
+    assert.doesNotMatch(brief, /run-2026/);
+    assert.match(brief, /- P:BR-01 "t"/);
+  });
+  it('ships a fixed Python base for the shared module', () => {
+    const base = pickTarget('Python 3.12').profile.baseTemplate!;
+    for (const fn of ['cob_now', 'cob_truncate', 'cob_round', 'edit_z', 'display_unsigned', 'pic_x']) assert.ok(base.includes(`def ${fn}(`), fn);
+    assert.match(base, /COB_CURRENT_DATE/);
+  });
+});
+
+describe('lockTarget', async () => {
+  const { lockTarget } = await import('../src/analyzer/index.ts');
+  const sys = () => ({ target_language: 'Java 21', target_runtime: 'eclipse-temurin:21-jdk', target_reasons: ['typed'] }) as never;
+  it('overrides the Analyzer pick unless unset or auto', () => {
+    const s = sys() as { target_language: string; target_runtime: string; target_reasons: string[] };
+    lockTarget(s as never, 'Python 3.12');
+    assert.equal(s.target_language, 'Python 3.12');
+    assert.equal(s.target_runtime, 'python:3.12-slim');
+    assert.match(s.target_reasons[0], /locked to Python 3.12.*suggested Java 21/);
+    for (const w of [undefined, '', 'auto']) {
+      const t = sys() as { target_language: string };
+      lockTarget(t as never, w);
+      assert.equal(t.target_language, 'Java 21');
+    }
+  });
+});
+
+describe('saved translations', async () => {
+  const { findSaved, legacyRanges, mapRules } = await import('../src/translator/saved.ts');
+  it('reads COBOL line ranges from docstrings and maps rules to the tightest function', () => {
+    const fns = legacyRanges('def calc_pay():\n    """CALC-PAY (COBOL lines 94-128)."""\n\n\ndef tax_for(g):\n    """Tax (COBOL lines 107-119)."""\n');
+    assert.deepEqual(fns.map(f => [f.name, f.legacyStart, f.legacyEnd]), [['calc_pay', 94, 128], ['tax_for', 107, 119]]);
+    assert.deepEqual(mapRules([{ id: 'P:BR-01', start: 109, end: 119 }, { id: 'P:BR-02', start: 121, end: 123 }, { id: 'P:BR-03', start: 1, end: 5 }], fns), [
+      { rule_id: 'P:BR-01', function: 'tax_for' },
+      { rule_id: 'P:BR-02', function: 'calc_pay' },
+    ]);
+  });
+  it('only matches the exact legacy source and target', async () => {
+    assert.equal(findSaved('python', 'not paycalc'), undefined);
+    const fns = legacyRanges(String((await import('node:fs')).readFileSync(new URL('../src/translator/saved/paycalc.py', import.meta.url))));
+    assert.ok(fns.length >= 8, String(fns.length));
+  });
+});

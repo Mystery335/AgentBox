@@ -12,6 +12,7 @@ import { runToolLoop, type ToolLoopResult } from '../llm.ts';
 import type { Stdb } from '../stdb.ts';
 import type { ComponentAnalysis } from '../analyzer/agent.ts';
 import { RUN_CONTRACT, type TargetProfile } from '../translator/targets.ts';
+import { shortRuleId } from '../translator/agent.ts';
 
 // ------------------------------------------------------------- inputs
 /** A component row as the Analyzer stored it (analysis kind "component"). */
@@ -87,7 +88,7 @@ function legacyBlock(ctx: LegacyContext): string {
   if (ctx.rules.length) {
     parts.push('## Business rules (from the Analyzer)');
     for (const r of ctx.rules) {
-      parts.push(`- ${r.id}: ${r.title}. Given ${r.given}; when ${r.when_}; then ${r.then_}. (legacy lines ${r.legacy_start_line}-${r.legacy_end_line})`);
+      parts.push(`- ${shortRuleId(r.id)}: ${r.title}. Given ${r.given}; when ${r.when_}; then ${r.then_}. (legacy lines ${r.legacy_start_line}-${r.legacy_end_line})`);
     }
   }
   if (a) {
@@ -200,7 +201,7 @@ export async function writeTests(db: Stdb, ctx: LegacyContext, onReject?: (p: st
       '## Your task',
       'Write 10 to 16 test cases. Each `input` is the COMPLETE text fed to the program on standard input (use \\n between lines, end with a newline, and include any terminator line the program expects, such as END, so it never waits for more input).',
       'Respect the exact input format the program reads (fixed columns, widths, zero padding).',
-      `rule_id: the rule the case targets (one of: ${[...ruleIds].join(', ') || 'none'}), or "" for a general case. kind: boundary, random or regression.`,
+      `rule_id: the rule the case targets (one of: ${[...ruleIds].map(shortRuleId).join(', ') || 'none'}), or "" for a general case. kind: boundary, random or regression.`,
     ].join('\n\n'),
     tools: [
       {
@@ -233,7 +234,8 @@ export async function writeTests(db: Stdb, ctx: LegacyContext, onReject?: (p: st
       cases: (Array.isArray(a.cases) ? a.cases : []).map((c: Record<string, unknown>) => ({
         name: String(c.name ?? '').slice(0, 120),
         input: typeof c.input === 'string' ? c.input : '',
-        rule_id: ruleIds.has(String(c.rule_id)) ? String(c.rule_id) : '',
+        // The prompt shows short ids; map answers back to the full rule id.
+        rule_id: ruleIds.has(String(c.rule_id)) ? String(c.rule_id) : [...ruleIds].find(id => shortRuleId(id) === String(c.rule_id)) ?? '',
         kind: (KINDS as readonly string[]).includes(String(c.kind)) ? String(c.kind) : 'random',
       })),
     }),

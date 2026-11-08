@@ -42,7 +42,7 @@ function stopAll(code = 0) {
 }
 
 for (const p of parts) {
-  const child = spawn('npm', ['run', p.script], { cwd: p.dir, shell: true, env: process.env });
+  const child = spawn('npm', ['run', p.script], { cwd: p.dir, shell: true, env: { ...process.env, TARGET_LANGUAGE: process.env.TARGET_LANGUAGE ?? 'Python 3.12' } });
   children.push(child);
   const prefix = `\x1b[${p.color}m[${p.name}]\x1b[0m `;
   const pipe = (stream, out) => {

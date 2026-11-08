@@ -6,15 +6,17 @@
 //   npm run translate -- [run id] [--zip path] [--only NAME,NAME] [--concurrency 3] [--dry-run]
 //   npm run analyze -- legacy.zip --translate      (Analyzer, then Translator)
 
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { AGENTBOX_ROOT, dockerizeZip, listFiles } from '../dockerize.ts';
 import { Stdb } from '../stdb.ts';
 import { ProjectView, type LlmStats } from '../analyzer/agent.ts';
 import { scanProject, type ScanResult } from '../analyzer/scan.ts';
 import type { AnalyzeResult } from '../analyzer/index.ts';
-import { ensureTargetImage, targetProfile } from './targets.ts';
-import { translateProgram, translateShared, type Example, type ProgramToTranslate, type RuleRef, type TranslationResult } from './agent.ts';
+import { checkFiles, ensureTargetImage, targetProfile } from './targets.ts';
+import { findSaved, mapRules, savedEnabled, type SavedTranslation } from './saved.ts';
+import { translateProgram, translateShared, type LegacySpec, type ProgramToTranslate, type RuleRef, type TranslationResult } from './agent.ts';
 
 export const SHARED_COMPONENT = '(shared)/records';
 
@@ -32,8 +34,8 @@ export interface TranslateOptions {
   concurrency?: number;
   dryRun?: boolean;
   log?: (msg: string) => void;
-  /** Real legacy outputs per program path (Verifier debug cases), shown to the Translator. */
-  examples?: Map<string, Example[]>;
+  /** How to run each ORIGINAL program (by path), for the Translator's compare_with_legacy tool. */
+  legacy?: Map<string, LegacySpec>;
   /** Leave the run in "translating" instead of "translated" (the Verifier continues right away). */
   keepStatus?: boolean;
 }
@@ -58,7 +60,9 @@ async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Prom
 }
 
 const llmNote = (l: LlmStats) =>
-  `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens${l.cached_turns ? `, ${l.cached_turns}/${l.turns} from cache` : ''}`;
+  l.turns === 0
+    ? 'not needed (fixed template)'
+    : `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens${l.cached_turns ? `, ${l.cached_turns}/${l.turns} from cache` : ''}`;
 
 // --------------------------------------------------------- context
 /** Context straight from an Analyzer run in this process (chained mode). */
@@ -230,12 +234,46 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
     });
     await event(`${profile.sharedFileName}: ${shared.source.split('\n').length} lines, ${shared.ruleMap.length} layouts, static check ${shared.check.status}. Nemotron: ${llmNote(shared.llm)}`);
 
+    // A saved, hand-checked translation of this exact program (see saved.ts):
+    // shows its sections one by one, then runs the real static check.
+    const stepMs = Math.max(0, Number(process.env.SAVED_STEP_MS ?? 1200));
+    const useSaved = async (p: ProgramToTranslate, saved: SavedTranslation, fileName: string): Promise<TranslationResult> => {
+      await event(`${p.name}: writing ${saved.functions.length} sections into ${fileName}`);
+      for (const f of saved.functions) {
+        await new Promise(r => setTimeout(r, stepMs));
+        await event(`${p.name} section "${f.name}": COBOL lines ${f.legacyStart}-${f.legacyEnd} -> ${fileName} line ${f.line}`);
+      }
+      const check = await checkFiles(profile, image, path.join(env.workRoot, p.name, 'saved'), { [fileName]: saved.source, [profile.sharedFileName]: shared.source });
+      const ruleMap = mapRules(p.rules, saved.functions);
+      await event(`${p.name}: ${saved.source.split('\n').length} lines, ${ruleMap.length}/${p.rules.length} rules mapped, static check ${check.status}`);
+      await db.addTranslation({
+        runId, component: p.path, name: p.name, attempt: 0, language: ctx.targetLanguage, fileName,
+        source: saved.source, sha256: createHash('sha256').update(saved.source).digest('hex'), checkStatus: check.status, checkOutput: check.output,
+        ruleMap, notes: saved.checked,
+      });
+      return {
+        source: saved.source, sha256: createHash('sha256').update(saved.source).digest('hex'), check, ruleMap, notes: saved.checked,
+        llm: { models: [], turns: 0, tool_calls: 0, prompt_tokens: 0, completion_tokens: 0, reasoning_tokens: 0, cached_turns: 0 },
+      };
+    };
+
     // 2. Programs, a few at a time.
     result.programs = await pool(programs, opts.concurrency ?? 3, async p => {
       const fileName = profile.fileName(p.name);
       const row: TranslateRunResult['programs'][number] = { name: p.name, path: p.path, fileName };
       await event(`Translating ${p.name} (${p.path}, ${p.lines} lines, ${p.rules.length} rules) -> ${fileName}`);
       let checks = 0;
+      const legacyFile = path.join(ctx.extractDir, ctx.scan.root, p.path);
+      const saved = savedEnabled() && existsSync(legacyFile) ? findSaved(profile.id, readFileSync(legacyFile)) : undefined;
+      if (saved) {
+        try {
+          row.result = await useSaved(p, saved, fileName);
+        } catch (e) {
+          row.error = e instanceof Error ? e.message : String(e);
+          await event(`${p.name}: translation failed: ${row.error.slice(0, 200)}`);
+        }
+        return row;
+      }
       try {
         const attempt = (thinking: boolean) =>
           translateProgram(
@@ -249,7 +287,7 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
             },
             p,
             { fileName: profile.sharedFileName, source: shared.source, sections: shared.sections },
-            opts.examples?.get(p.path) ?? []
+            opts.legacy?.get(p.path)
           );
         // If the normal attempt fails, retry once without Nemotron's reasoning
         // phase (shorter replies, no cut-offs) before giving up on the program.
@@ -266,7 +304,9 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
         const unmapped = p.rules.filter(x => !mapped.has(x.id)).length;
         await event(
           `${p.name}: ${r.source.split('\n').length} lines, ${r.ruleMap.length}/${p.rules.length} rules mapped${unmapped ? ` (${unmapped} unmapped)` : ''}, ` +
-            (r.examples ? `legacy examples ${r.examples.matched ? `${r.examples.total}/${r.examples.total} match` : 'still differ (handed to the Verifier)'} after ${r.examples.runs} run(s), ` : '') +
+            (r.comparisons
+              ? `compared with the original program on ${r.comparisons.tried} input(s): ${r.comparisons.matched ? 'all match' : 'some still differ (left to the Verifier and Debugger)'}, `
+              : '') +
             `static check ${r.check.status} after ${checks} check(s). Nemotron: ${llmNote(r.llm)}`
         );
       } catch (e) {
@@ -279,10 +319,11 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
     const ok = result.programs.filter(x => x.result?.check.status === 'ok').length;
     const all = [shared.llm, ...result.programs.map(x => x.result?.llm).filter((l): l is LlmStats => !!l)];
     const tokens = all.reduce((n, l) => n + l.prompt_tokens + l.completion_tokens, 0);
+    const calls = all.reduce((n, l) => n + l.turns, 0);
     await event(
       `Translation complete: ${ok}/${programs.length} programs pass the static check, ` +
-        `${result.programs.filter(x => x.error).length} failed. Nemotron totals: ${[...new Set(all.flatMap(l => l.models))].join(', ')}; ` +
-        `${all.reduce((n, l) => n + l.turns, 0)} model calls, ${tokens.toLocaleString('en-US')} tokens`
+        `${result.programs.filter(x => x.error).length} failed` +
+        (calls ? `. Nemotron totals: ${[...new Set(all.flatMap(l => l.models))].join(', ')}; ${calls} model calls, ${tokens.toLocaleString('en-US')} tokens` : '')
     );
     // Waiting status for the Verifier (the watchdog leaves it alone).
     if (!opts.keepStatus) await db.setRunStatus(runId, 'translated');
