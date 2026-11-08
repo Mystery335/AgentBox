@@ -1,5 +1,6 @@
 // AgentProof SpacetimeDB module (database "legacy-data" on Maincloud).
-// Data contract: .claude/shared-context-v2.md §6 (9 tables, 14 reducers).
+// Data contract: 10 public tables (incl. `analysis`) + private `writer`,
+// 17 reducers (incl. delete_run), 2 procedures (nemotron_ping, nemotron_chat).
 //
 // Field choice for the §7.12 conflict: the team's original plan fields, with the
 // v2 additions on top (split, kind, rule_id, disposition, legacy_sha256,
@@ -18,11 +19,12 @@ import {
   type ReducerCtx,
   type ProcedureCtx,
 } from 'spacetimedb/server';
-import { TimeDuration } from 'spacetimedb';
+import { TimeDuration, ScheduleAt } from 'spacetimedb';
 
 // ---------------------------------------------------------------- enums
 const RUN_STATUSES = [
   'analyzing',
+  'analyzed', // Analyzer done; waiting for the Translator (watchdog ignores it)
   'translating',
   'verifying',
   'debugging',
@@ -31,6 +33,24 @@ const RUN_STATUSES = [
   'failed',
 ] as const;
 const FINAL_RUN_STATUSES = ['ready_for_cutover', 'failed'] as const;
+// Run state machine: the only status moves set_run_status / finish_run allow.
+// Staying in the same status is always allowed (idempotent retries).
+const NEXT_STATUS: Record<string, readonly string[]> = {
+  analyzing: ['analyzed', 'translating', 'failed'],
+  analyzed: ['translating', 'failed'],
+  translating: ['verifying', 'failed'],
+  verifying: ['debugging', 'shadow', 'failed'],
+  debugging: ['verifying', 'shadow', 'failed'],
+  shadow: ['debugging', 'ready_for_cutover', 'failed'],
+  ready_for_cutover: [],
+  failed: [],
+};
+// Watchdog: a run with no writer activity for this long is marked failed.
+// Longer than one Nemotron call (170 s) plus a Docker build, with headroom.
+const STALL_MICROS = 15n * 60n * 1_000_000n;
+// Statuses where the run is waiting on purpose, so no activity is expected.
+const WAITING_STATUSES: readonly string[] = ['analyzed'];
+const WATCHDOG_EVERY_MICROS = 60n * 1_000_000n;
 const RULE_STATUSES = ['pending', 'verified', 'fixed', 'unresolved', 'approved'] as const;
 const DISPOSITIONS = ['keep', 'review', 'drop_candidate'] as const;
 const SPLITS = ['debug', 'holdout', 'shadow'] as const;
@@ -180,11 +200,61 @@ const agent_event = table(
   }
 );
 
+// Analyzer output, one row per artifact. `kind` says what `json` holds:
+//   system     - overview, recommended target language + reasons, first slice
+//   inventory  - every file with its kind and language
+//   component  - one source program/module: facts, compile result,
+//                verifiable/deferred + reasons, summary, rule ids, layouts
+//   runtime    - how the legacy image was built (Dockerfile, toolchain)
+// `key` is "" for system/inventory/runtime and the file path for component.
+const analysis = table(
+  { name: 'analysis', public: true },
+  {
+    id: t.string().primaryKey(), // `${run_id}:${kind}:${key}`
+    run_id: t.string().index('btree'),
+    kind: t.string(),
+    key: t.string(),
+    json: t.string(),
+    created_at: t.timestamp(),
+  }
+);
+
 // Private: only reducers can read it.
 const writer = table(
   { name: 'writer' },
   {
     identity_hex: t.string().primaryKey(),
+  }
+);
+
+// Last writer activity per open run (every writer reducer touches it, plus
+// the `heartbeat` reducer during long Docker steps). Read by the watchdog.
+// Separate table so adding it is not a breaking change to `run`.
+const run_heartbeat = table(
+  { name: 'run_heartbeat', public: true },
+  {
+    run_id: t.string().primaryKey(),
+    last_seen: t.timestamp(),
+  }
+);
+
+// Which writer (worker) identities are connected right now. Filled by the
+// client_connected / client_disconnected lifecycle reducers.
+const worker_presence = table(
+  { name: 'worker_presence', public: true },
+  {
+    identity_hex: t.string().primaryKey(),
+    online: t.bool(),
+    since: t.timestamp(),
+  }
+);
+
+// Private schedule table: one row, fires `watchdog` every minute.
+const watchdog_schedule = table(
+  { name: 'watchdog_schedule' },
+  {
+    scheduled_id: t.u64().primaryKey().autoInc(),
+    scheduled_at: t.scheduleAt(),
   }
 );
 
@@ -199,7 +269,11 @@ const spacetimedb = schema(
   change,
   debug_attempt,
   agent_event,
+  analysis,
   writer,
+  run_heartbeat,
+  worker_presence,
+  watchdog_schedule,
   },
   {
     // Keep names exactly as written (the default SnakeCase policy could rename
@@ -219,18 +293,43 @@ export default spacetimedb;
 
 type Ctx = ReducerCtx<InferSchema<typeof spacetimedb>>;
 
+function isWriter(ctx: Ctx): boolean {
+  return !!ctx.db.writer.identity_hex.find(ctx.sender.toHexString());
+}
+
 function requireWriter(ctx: Ctx): void {
-  if (!ctx.db.writer.identity_hex.find(ctx.sender.toHexString())) {
+  if (!isWriter(ctx)) {
     throw new SenderError('not a writer: register this identity with add_writer');
   }
 }
 
-/** Returns the run, or throws if it doesn't exist or has already finished. */
+/** Records writer activity on a run, for the watchdog. */
+function touch(ctx: Ctx, run_id: string): void {
+  const hb = ctx.db.run_heartbeat.run_id.find(run_id);
+  if (hb) ctx.db.run_heartbeat.run_id.update({ run_id, last_seen: ctx.timestamp });
+  else ctx.db.run_heartbeat.insert({ run_id, last_seen: ctx.timestamp });
+}
+
+/** Returns the run, or throws if it doesn't exist or has already finished. Counts as activity. */
 function openRun(ctx: Ctx, run_id: string) {
   const r = ctx.db.run.id.find(run_id);
   if (!r) throw new SenderError(`unknown run "${run_id}"`);
   if (r.finished_at !== undefined) throw new SenderError(`run "${run_id}" has already finished`);
+  touch(ctx, run_id);
   return r;
+}
+
+function checkTransition(from: string, to: string): void {
+  if (from === to) return;
+  if (!(NEXT_STATUS[from] ?? []).includes(to)) {
+    throw new SenderError(`run status cannot go from "${from}" to "${to}"`);
+  }
+}
+
+/** Makes sure the watchdog schedule row exists (init only runs on the first publish). */
+function ensureWatchdog(ctx: Ctx): void {
+  if (ctx.db.watchdog_schedule.count() > 0n) return;
+  ctx.db.watchdog_schedule.insert({ scheduled_id: 0n, scheduled_at: ScheduleAt.interval(WATCHDOG_EVERY_MICROS) });
 }
 
 function checkAttempt(attempt: number): void {
@@ -241,7 +340,46 @@ function checkAttempt(attempt: number): void {
 // The identity that publishes the module becomes the first writer.
 export const init = spacetimedb.init(ctx => {
   ctx.db.writer.insert({ identity_hex: ctx.sender.toHexString() });
+  ensureWatchdog(ctx);
 });
+
+// Presence is tracked for writers only, so dashboard visitors leave no rows.
+function setPresence(ctx: Ctx, online: boolean): void {
+  if (!isWriter(ctx)) return;
+  const identity_hex = ctx.sender.toHexString();
+  const row = { identity_hex, online, since: ctx.timestamp };
+  if (ctx.db.worker_presence.identity_hex.find(identity_hex)) ctx.db.worker_presence.identity_hex.update(row);
+  else ctx.db.worker_presence.insert(row);
+}
+
+export const client_connected = spacetimedb.clientConnected(ctx => setPresence(ctx, true));
+export const client_disconnected = spacetimedb.clientDisconnected(ctx => setPresence(ctx, false));
+
+// Scheduled every minute. Fails any open run with no writer activity for
+// STALL_MICROS, so a crashed worker never leaves a run "running" forever.
+export const watchdog = spacetimedb.reducer(
+  { onSchedule: watchdog_schedule },
+  { arg: watchdog_schedule.rowType },
+  ctx => {
+    // Only the scheduler (the database's own identity) may run this.
+    if (!ctx.sender.isEqual(ctx.databaseIdentity)) throw new SenderError('watchdog is internal');
+    const now = ctx.timestamp.microsSinceUnixEpoch;
+    for (const r of ctx.db.run.iter()) {
+      if (r.finished_at !== undefined || WAITING_STATUSES.includes(r.status)) continue;
+      const hb = ctx.db.run_heartbeat.run_id.find(r.id);
+      const last = (hb ? hb.last_seen : r.started_at).microsSinceUnixEpoch;
+      if (now - last < STALL_MICROS) continue;
+      ctx.db.run.id.update({ ...r, status: 'failed', finished_at: ctx.timestamp });
+      ctx.db.agent_event.insert({
+        id: `${r.id}:watchdog:${now}`,
+        run_id: r.id,
+        agent: 'system',
+        message: `Run timed out: no worker activity for ${STALL_MICROS / 60_000_000n} minutes while "${r.status}".`,
+        created_at: ctx.timestamp,
+      });
+    }
+  }
+);
 
 // ------------------------------------------------------------- reducers
 // 1
@@ -282,6 +420,8 @@ export const start_run = spacetimedb.reducer(
     if (!ctx.db.program.sha256.find(a.legacy_sha256)) {
       throw new SenderError(`no program with sha256 ${a.legacy_sha256}; call add_program first`);
     }
+    ensureWatchdog(ctx);
+    touch(ctx, a.run_id);
     ctx.db.run.insert({
       id: a.run_id,
       legacy_name: a.legacy_name,
@@ -304,10 +444,20 @@ export const set_run_status = spacetimedb.reducer(
   (ctx, { run_id, status }) => {
     requireWriter(ctx);
     oneOf('status', status, RUN_STATUSES);
+    if ((FINAL_RUN_STATUSES as readonly string[]).includes(status)) {
+      throw new SenderError(`use finish_run to set "${status}"`);
+    }
     const r = openRun(ctx, run_id);
+    checkTransition(r.status, status);
     ctx.db.run.id.update({ ...r, status });
   }
 );
+
+// Keeps a run alive for the watchdog during long steps (Docker builds, test batches).
+export const heartbeat = spacetimedb.reducer({ run_id: t.string() }, (ctx, { run_id }) => {
+  requireWriter(ctx);
+  openRun(ctx, run_id);
+});
 
 // 5
 export const set_documentation = spacetimedb.reducer(
@@ -357,13 +507,21 @@ export const add_rule = spacetimedb.reducer(
   }
 );
 
-// 8: open to any caller so the dashboard's Approve button works (§7.15).
+// 8: writers may set any status. Anyone else (the dashboard's Approve button,
+// §7.15) may only approve, and only a rule the agents have already checked.
+const APPROVABLE = ['verified', 'fixed', 'unresolved'];
 export const update_rule_status = spacetimedb.reducer(
   { rule_id: t.string(), status: t.string() },
   (ctx, { rule_id, status }) => {
     oneOf('status', status, RULE_STATUSES);
     const r = ctx.db.rule.id.find(rule_id);
     if (!r) throw new SenderError(`unknown rule "${rule_id}"`);
+    if (!isWriter(ctx)) {
+      if (status !== 'approved') throw new SenderError('the dashboard can only approve rules');
+      if (!APPROVABLE.includes(r.status)) {
+        throw new SenderError(`rule "${rule_id}" is "${r.status}"; only ${APPROVABLE.join(', ')} rules can be approved`);
+      }
+    }
     ctx.db.rule.id.update({ ...r, status });
   }
 );
@@ -478,13 +636,74 @@ export const add_debug_attempt = spacetimedb.reducer(
   }
 );
 
+// 15: Analyzer output. Re-sending the same kind+key replaces the row, so a
+// re-run of one analysis step doesn't fail.
+const ANALYSIS_KINDS = ['system', 'inventory', 'component', 'runtime'] as const;
+export const add_analysis = spacetimedb.reducer(
+  { run_id: t.string(), kind: t.string(), key: t.string(), json: t.string() },
+  (ctx, { run_id, kind, key, json }) => {
+    requireWriter(ctx);
+    openRun(ctx, run_id);
+    oneOf('kind', kind, ANALYSIS_KINDS);
+    try {
+      JSON.parse(json);
+    } catch {
+      throw new SenderError('json must be valid JSON');
+    }
+    const id = `${run_id}:${kind}:${key}`;
+    const row = { id, run_id, kind, key, json, created_at: ctx.timestamp };
+    if (ctx.db.analysis.id.find(id)) ctx.db.analysis.id.update(row);
+    else ctx.db.analysis.insert(row);
+  }
+);
+
+// 16: the Analyzer decides the target language after start_run.
+export const set_target_language = spacetimedb.reducer(
+  { run_id: t.string(), target_language: t.string() },
+  (ctx, { run_id, target_language }) => {
+    requireWriter(ctx);
+    nonEmpty('target_language', target_language);
+    const r = openRun(ctx, run_id);
+    ctx.db.run.id.update({ ...r, target_language });
+  }
+);
+
+// 17: permanently deletes one run and every row that belongs to it, plus its
+// program row when no other run uses that program. Writer-only. Works on
+// finished and unfinished runs.
+export const delete_run = spacetimedb.reducer({ run_id: t.string() }, (ctx, { run_id }) => {
+  requireWriter(ctx);
+  const r = ctx.db.run.id.find(run_id);
+  if (!r) throw new SenderError(`unknown run "${run_id}"`);
+  ctx.db.analysis.run_id.delete(run_id);
+  ctx.db.rule.run_id.delete(run_id);
+  ctx.db.agent_event.run_id.delete(run_id);
+  ctx.db.test_case.run_id.delete(run_id);
+  ctx.db.test_result.run_id.delete(run_id);
+  ctx.db.code_version.run_id.delete(run_id);
+  ctx.db.change.run_id.delete(run_id);
+  ctx.db.debug_attempt.run_id.delete(run_id);
+  ctx.db.run_heartbeat.run_id.delete(run_id);
+  ctx.db.run.id.delete(run_id);
+  let shared = false;
+  for (const other of ctx.db.run.iter()) {
+    if (other.legacy_sha256 === r.legacy_sha256) {
+      shared = true;
+      break;
+    }
+  }
+  if (!shared) ctx.db.program.sha256.delete(r.legacy_sha256);
+});
+
 // 13: allowed after a run finishes too, so closing messages still land.
 export const log_event = spacetimedb.reducer(
   { event_id: t.string(), run_id: t.string(), agent: t.string(), message: t.string() },
   (ctx, { event_id, run_id, agent, message }) => {
     requireWriter(ctx);
-    if (!ctx.db.run.id.find(run_id)) throw new SenderError(`unknown run "${run_id}"`);
+    const r = ctx.db.run.id.find(run_id);
+    if (!r) throw new SenderError(`unknown run "${run_id}"`);
     if (ctx.db.agent_event.id.find(event_id)) throw new SenderError(`event "${event_id}" already exists`);
+    if (r.finished_at === undefined) touch(ctx, run_id);
     ctx.db.agent_event.insert({ id: event_id, run_id, agent, message, created_at: ctx.timestamp });
   }
 );
@@ -496,9 +715,67 @@ export const finish_run = spacetimedb.reducer(
     requireWriter(ctx);
     oneOf('status', status, FINAL_RUN_STATUSES);
     const r = openRun(ctx, run_id);
+    checkTransition(r.status, status);
     ctx.db.run.id.update({ ...r, status, finished_at: ctx.timestamp });
+    ctx.db.run_heartbeat.run_id.delete(run_id);
   }
 );
+
+// --------------------------------------------------------------- views
+// One row per run with the numbers the dashboard header needs, computed on
+// the server and pushed to subscribers whenever an underlying row changes.
+// "Latest attempt" is the highest attempt with test results.
+const RunSummary = t.row('RunSummaryRow', {
+  run_id: t.string().primaryKey(),
+  status: t.string(),
+  target_language: t.string(),
+  latest_attempt: t.u32(),
+  tests_total: t.u32(),
+  tests_passed: t.u32(), // in the latest attempt, all splits
+  holdout_total: t.u32(),
+  holdout_passed: t.u32(),
+  existing_tests: t.u32(), // the legacy system's own tests
+  rules_total: t.u32(),
+  rules_verified: t.u32(), // verified + fixed + approved
+  rules_approved: t.u32(),
+  rules_unresolved: t.u32(),
+  debug_attempts: t.u32(),
+  events: t.u32(),
+  last_activity: t.option(t.timestamp()),
+});
+
+export const run_summary = spacetimedb.anonymousView({ name: 'run_summary', public: true }, t.array(RunSummary), ctx => {
+  const out = [];
+  for (const r of ctx.db.run.iter()) {
+    const cases = [...ctx.db.test_case.run_id.filter(r.id)];
+    const split = new Map(cases.map(c => [c.id, c.split]));
+    const results = [...ctx.db.test_result.run_id.filter(r.id)];
+    const latest = results.reduce((m, x) => Math.max(m, x.attempt), 0);
+    const now = results.filter(x => x.attempt === latest);
+    const holdout = now.filter(x => split.get(x.test_case_id) === 'holdout');
+    const rules = [...ctx.db.rule.run_id.filter(r.id)];
+    const hb = ctx.db.run_heartbeat.run_id.find(r.id);
+    out.push({
+      run_id: r.id,
+      status: r.status,
+      target_language: r.target_language,
+      latest_attempt: latest,
+      tests_total: cases.length,
+      tests_passed: now.filter(x => x.passed).length,
+      holdout_total: cases.filter(c => c.split === 'holdout').length,
+      holdout_passed: holdout.filter(x => x.passed).length,
+      existing_tests: cases.filter(c => c.origin === 'existing').length,
+      rules_total: rules.length,
+      rules_verified: rules.filter(x => ['verified', 'fixed', 'approved'].includes(x.status)).length,
+      rules_approved: rules.filter(x => x.status === 'approved').length,
+      rules_unresolved: rules.filter(x => x.status === 'unresolved').length,
+      debug_attempts: [...ctx.db.debug_attempt.run_id.filter(r.id)].length,
+      events: [...ctx.db.agent_event.run_id.filter(r.id)].length,
+      last_activity: hb ? hb.last_seen : r.finished_at,
+    });
+  }
+  return out;
+});
 
 // ------------------------------------------------------------ Nemotron
 // Procedures (not reducers) because they make HTTP calls. The API key lives

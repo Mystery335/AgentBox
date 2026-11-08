@@ -112,8 +112,11 @@ describe('findDockerfile', () => {
     assert.equal(findDockerfile(['dockerfile']), 'dockerfile');
     assert.equal(findDockerfile(['x/Containerfile']), 'x/Containerfile');
   });
-  it('errors when missing or ambiguous', () => {
-    assert.throws(() => findDockerfile(['a.cbl']), DockerizeError);
+  it('returns undefined when missing (one gets generated)', () => {
+    assert.equal(findDockerfile(['a.cbl', 'b/c.cpy']), undefined);
+  });
+  it('errors when ambiguous', () => {
+    assert.throws(() => findDockerfile(['a/Dockerfile', 'b/Dockerfile']), DockerizeError);
     assert.throws(() => findDockerfile(['a/Dockerfile', 'b/Dockerfile']), /several/);
   });
 });

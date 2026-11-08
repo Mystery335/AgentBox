@@ -1,7 +1,7 @@
 // Backend smoke test: proves the published module really stores data.
 //
 //   npm run identity   -> prints a worker identity + token (put the token in .env)
-//   npm run smoke      -> calls all 14 reducers with a fresh run id, reads every
+//   npm run smoke      -> calls all 16 reducers with a fresh run id, reads every
 //                         table back with SQL, and checks the rows.
 //
 // It writes real rows (run ids start with "smoke-"). There are no delete
@@ -57,8 +57,15 @@ async function smoke(): Promise<number> {
   await db.addChange(`${id}:chg-1`, id, 0, 'translator', '', 'Initial', 'first pass', '+print("hi")');
   await db.addDebugAttempt(`${id}:dbg-1`, id, 1, '1 failing', 'case', 'fix', 2, 2, 'fixed');
   await db.logEvent(`${id}:evt-1`, id, 'analyzer', 'smoke event');
+  await db.setTargetLanguage(id, 'Java 21');
+  await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: false });
+  await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: true }); // same key: replaces
+  await db.heartbeat(id);
+  await expectReject('rejects skipping a stage (translating -> shadow)', () => db.setRunStatus(id, 'shadow'));
+  await db.setRunStatus(id, 'verifying');
+  await db.setRunStatus(id, 'shadow');
   await db.finishRun(id, 'ready_for_cutover');
-  check('all 14 reducers accepted (writer token works)', true);
+  check('all reducers accepted (writer token works)', true);
 
   // Validation must reject bad input ---------------------------------------
   await expectReject('rejects an unknown status', () => db.setRunStatus(id, 'bogus'));
@@ -76,6 +83,16 @@ async function smoke(): Promise<number> {
   const stranger = await newIdentity(db.host);
   const anon = new Stdb({ token: stranger.token });
   await expectReject('rejects an identity that is not a writer', () => anon.logEvent(`${id}:evt-3`, id, 'x', 'y'));
+  await expectReject('dashboard identity cannot un-verify a rule', () => anon.updateRuleStatus(`${id}:r-1`, 'pending'));
+  try {
+    await anon.updateRuleStatus(`${id}:r-1`, 'approved');
+    check('dashboard identity can approve a verified rule', true);
+  } catch (e) {
+    check('dashboard identity can approve a verified rule', false, e instanceof Error ? e.message.slice(0, 120) : String(e));
+  }
+  const summary = (await db.sql(`SELECT * FROM run_summary WHERE run_id = '${id}'`))[0];
+  check('run_summary view counts tests and rules', !!summary && Number(summary.tests_total) === 2 && Number(summary.rules_approved) === 1,
+    JSON.stringify(summary ?? {}).slice(0, 160));
 
   // Read back ---------------------------------------------------------------
   const one = async (q: string) => (await db.sql(q))[0];
@@ -90,7 +107,7 @@ async function smoke(): Promise<number> {
   check('program row stored (with language)', prog?.language === 'cobol');
   check('code_version stored', (await count('code_version', `run_id = '${id}'`)) === 1);
   const rule = await one(`SELECT * FROM rule WHERE run_id = '${id}'`);
-  check('rule stored, status updated', rule?.status === 'verified' && rule?.when_ === 'it is rounded',
+  check('rule stored, status updated', rule?.status === 'approved' && rule?.when_ === 'it is rounded',
     `status=${rule?.status}`);
   check('test_case rows stored', (await count('test_case', `run_id = '${id}'`)) === 2);
   const tc2 = await one(`SELECT * FROM test_case WHERE id = '${id}:tc-2'`);
@@ -100,6 +117,9 @@ async function smoke(): Promise<number> {
   check('passing result drops modern_output', passed?.modern_output === '');
   check('change stored', (await count('change', `run_id = '${id}'`)) === 1);
   check('debug_attempt stored', (await count('debug_attempt', `run_id = '${id}'`)) === 1);
+  check('run.target_language set', run?.target_language === 'Java 21', `target=${run?.target_language}`);
+  const an = await db.sql(`SELECT * FROM analysis WHERE run_id = '${id}'`);
+  check('analysis row stored and replaced on same key', an.length === 1 && JSON.parse(String(an[0].json)).verifiable === true, `rows=${an.length}`);
   check('agent_event stored (incl. late event)', (await count('agent_event', `run_id = '${id}'`)) === 2);
 
   try {
