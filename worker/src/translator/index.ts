@@ -220,7 +220,7 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
       {
         concurrency: opts.concurrency ?? 3,
         onPart: (name, part) =>
-          void event(
+          name !== 'base' && void event(
             part.code
               ? `${profile.sharedFileName} section "${name}": ${part.code.split('\n').length} lines (${part.symbols.slice(0, 4).join(', ') || 'no symbols listed'}). Nemotron: ${llmNote(part.llm)}`
               : `${profile.sharedFileName} section "${name}": ${part.notes.slice(0, 200)}`
@@ -232,7 +232,6 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
       runId, component: SHARED_COMPONENT, name: 'RECORDS', attempt: 0, language: ctx.targetLanguage, fileName: profile.sharedFileName,
       source: shared.source, sha256: shared.sha256, checkStatus: shared.check.status, checkOutput: shared.check.output, ruleMap: shared.ruleMap, notes: shared.notes,
     });
-    await event(`${profile.sharedFileName}: ${shared.source.split('\n').length} lines, ${shared.ruleMap.length} layouts, static check ${shared.check.status}. Nemotron: ${llmNote(shared.llm)}`);
 
     // A saved, hand-checked translation of this exact program (see saved.ts):
     // shows its sections one by one, then runs the real static check.
