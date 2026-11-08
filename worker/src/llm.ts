@@ -63,7 +63,8 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
   if (useCache && existsSync(file)) return { ...(JSON.parse(await readFile(file, 'utf8')) as ChatResponse), fromCache: true };
 
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let timeouts = 0;
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const res = (await db.nemotronChat(request as { messages: unknown[] })) as ChatResponse;
       if (useCache) {
@@ -74,9 +75,19 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
     } catch (e) {
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
-      const retryable = /\b(429|500|502|503|504)\b|timed? ?out|ECONNRESET|fetch failed/i.test(msg);
-      if (!retryable || (e instanceof StdbError && /not a writer|not set/.test(msg))) throw e;
-      await sleep(2000 * 2 ** attempt);
+      if (e instanceof StdbError && /not a writer|not set/.test(msg)) throw e;
+      // Rate limited: NVIDIA's window is about a minute, so wait long enough.
+      if (/\b429\b|Too Many Requests/i.test(msg)) {
+        await sleep(20_000 * Math.min(attempt + 1, 3));
+        continue;
+      }
+      // A procedure timeout (180 s cap) usually repeats for the same request: retry once.
+      if (/timed? ?out/i.test(msg)) {
+        if (++timeouts > 1) throw e;
+        continue;
+      }
+      if (!/\b(500|502|503|504)\b|ECONNRESET|fetch failed/i.test(msg)) throw e;
+      await sleep(3000 * 2 ** attempt);
     }
   }
   throw lastError;
@@ -121,6 +132,12 @@ export interface ToolLoopOptions {
   validate?: (args: Record<string, unknown>) => string | undefined;
   maxTurns?: number;
   maxTokens?: number;
+  /**
+   * false turns off Nemotron's reasoning phase. Use it for agents whose answer
+   * is long (whole source files): reasoning plus a long answer can exceed the
+   * 180 s SpacetimeDB procedure limit.
+   */
+  thinking?: boolean;
   /** Called for every tool call (for live agent_event logging). */
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   /** Called when a final answer is rejected by `validate` (the model then retries). */
@@ -170,6 +187,7 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
       tool_choice: forceFinal ? { type: 'function', function: { name: o.finalTool } } : 'auto',
       max_tokens: o.maxTokens ?? 12000,
       temperature: 0,
+      ...(o.thinking === false ? { chat_template_kwargs: { enable_thinking: false } } : {}),
     });
     reasoningTokens += res.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
     promptTokens += res.usage?.prompt_tokens ?? 0;

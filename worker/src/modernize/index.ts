@@ -151,36 +151,8 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
     return { runId, component: component.name, target: target.label, status: 'failed', attempts: 0, debugPassed: 0, debugTotal: 0, holdoutPassed: 0, holdoutTotal: 0, reason, ...partial };
   };
 
-  // 2. Translator.
+  // 2. Verifier first half: test inputs from Nemotron, expected outputs from the LEGACY program.
   await db.setRunStatus(runId, 'translating');
-  await event('translator', `Translating ${component.name} (${component.path}, ${component.lines} lines, ${ctx.rules.length} rules) to ${target.label}${p.fallback ? ` (target "${p.targetLanguage}" has no sandbox profile yet, so Python is used)` : ''}`);
-  let tr;
-  try {
-    tr = await translate(db, ctx, target, problem => void event('translator', `Answer rejected (${problem.slice(0, 160)}); retrying`));
-  } catch (e) {
-    return fail(`translation failed: ${e instanceof Error ? e.message : e}`);
-  }
-  let code = tr.code;
-  const writeCode = async (attempt: number, src: string) => {
-    const dir = path.join(workDir, `attempt-${attempt}`);
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, target.file), src);
-    return dir;
-  };
-  let codeDir = await writeCode(0, code);
-  await db.addCodeVersion(runId, 0, code, sha256(code), '');
-  await db.addChange(`${runId}:chg-0`, runId, 0, 'translator', '', `Translated ${component.name} to ${target.label}`, tr.notes.slice(0, 2000), code.split('\n').map(l => `+${l}`).join('\n'));
-  for (const m of tr.rule_map) {
-    try {
-      await db.setRuleModernLines(m.rule_id, m.start_line, m.end_line);
-    } catch (e) {
-      await event('translator', `Could not map ${m.rule_id}: ${e instanceof Error ? e.message.slice(0, 120) : e}`);
-    }
-  }
-  await event('translator', `Wrote ${target.file}: ${code.split('\n').length} lines, ${tr.rule_map.length}/${ctx.rules.length} rules mapped to modern lines. Nemotron: ${tr.stats.turns} turns, ${tr.stats.reasoningTokens} reasoning tokens`);
-
-  // 3. Verifier: tests from Nemotron, expected outputs from the LEGACY program.
-  await db.setRunStatus(runId, 'verifying');
   await event('verifier', 'Designing test inputs from the business rules');
   let gen: GeneratedCase[];
   try {
@@ -227,6 +199,36 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
   const holdoutTotal = cases.filter(c => c.split === 'holdout').length;
   const debugTotal = cases.length - holdoutTotal;
   await event('verifier', `Recorded ${cases.length} golden outputs from the legacy program: ${debugTotal} debug, ${holdoutTotal} holdout (the Debugger never sees holdout cases)`);
+
+  // 3. Translator, shown the legacy program's real output on a few DEBUG cases (never holdout).
+  const examples = cases.filter(c => c.split === 'debug').slice(0, 4).map(c => ({ input: c.input, expected: c.expected }));
+  await event('translator', `Translating ${component.name} (${component.path}, ${component.lines} lines, ${ctx.rules.length} rules) to ${target.label}${p.fallback ? ` (target "${p.targetLanguage}" has no sandbox profile yet, so Python is used)` : ''}`);
+  let tr;
+  try {
+    tr = await translate(db, ctx, target, examples, problem => void event('translator', `Answer rejected (${problem.slice(0, 160)}); retrying`));
+  } catch (e) {
+    return fail(`translation failed: ${e instanceof Error ? e.message : e}`);
+  }
+  let code = tr.code;
+  const writeCode = async (attempt: number, src: string) => {
+    const dir = path.join(workDir, `attempt-${attempt}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, target.file), src);
+    return dir;
+  };
+  let codeDir = await writeCode(0, code);
+  await db.addCodeVersion(runId, 0, code, sha256(code), '');
+  await db.addChange(`${runId}:chg-0`, runId, 0, 'translator', '', `Translated ${component.name} to ${target.label}`, tr.notes.slice(0, 2000), code.split('\n').map(l => `+${l}`).join('\n'));
+  for (const m of tr.rule_map) {
+    try {
+      await db.setRuleModernLines(m.rule_id, m.start_line, m.end_line);
+    } catch (e) {
+      await event('translator', `Could not map ${m.rule_id}: ${e instanceof Error ? e.message.slice(0, 120) : e}`);
+    }
+  }
+  await event('translator', `Wrote ${target.file}: ${code.split('\n').length} lines, ${tr.rule_map.length}/${ctx.rules.length} rules mapped to modern lines. Nemotron: ${tr.stats.turns} turns, ${tr.stats.reasoningTokens} reasoning tokens`);
+
+  await db.setRunStatus(runId, 'verifying');
 
   // 4. Verify, then debug and re-verify until everything passes or attempts run out.
   const runModern = (dir: string, label: string): Promise<BatchResult> =>

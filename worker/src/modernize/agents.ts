@@ -137,10 +137,42 @@ function contract(target: TargetProfile): string {
     `Write ONE ${target.label} file named ${target.file}. It is run as: ${target.run}`,
     'It must behave EXACTLY like the legacy program: read the same input from standard input, write the same output to standard output, and exit with the same exit code.',
     NORMALIZATION_POLICY,
-    'So keep every space, column alignment, zero padding, sign and number format the legacy program prints (for example COBOL edited pictures like Z(6)9.99 print leading spaces).',
+    'So keep every space, column alignment, zero padding, sign and number format the legacy program prints.',
+    'COBOL edited pictures have a FIXED width: Z(4)9 is 5 characters, Z(6)9.99 is 10, Z(8)9.99 is 12. Z positions turn leading zeros into spaces, but 9 positions always print a digit, so zero prints as "    0" in Z(4)9 and "      0.00" in Z(6)9.99. DISPLAY of a PIC X(n) field prints all n characters (trailing spaces included). Alphanumeric literals print exactly as written.',
     'The sandbox has no network and a read-only file system: do not open files or sockets, do not import third-party packages.',
+    'The file must compile on the first try: declare every helper you call, import what you use, and handle or declare checked exceptions.',
     `Language notes: ${target.notes}`,
   ].join('\n');
+}
+
+/** Real legacy behaviour on a few debug inputs (never holdout ones), shown to the Translator. */
+export interface Example {
+  input: string;
+  expected: string;
+}
+
+function examplesBlock(examples: Example[]): string {
+  if (!examples.length) return '';
+  return [
+    '## Real behaviour of the legacy program (recorded by running it)',
+    'Your program must produce exactly this output for these inputs. Strings are JSON-quoted so spaces are visible; "[exit N]" on the last line is the exit code.',
+    ...examples.map((e, i) => `### Example ${i + 1}\nstdin: ${JSON.stringify(e.input)}\nstdout lines:\n${e.expected.split('\n').map(l => `  ${JSON.stringify(l)}`).join('\n')}`),
+  ].join('\n');
+}
+
+/** Line-by-line comparison with visible spaces, for the Debugger. Exported for tests. */
+export function lineDiff(expected: string, actual: string, max = 8): string {
+  const e = expected.split('\n');
+  const a = actual.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(e.length, a.length) && out.length < max; i++) {
+    if (e[i] === a[i]) continue;
+    const col = e[i] !== undefined && a[i] !== undefined ? [...e[i]].findIndex((ch, j) => ch !== a[i][j]) : -1;
+    out.push(
+      `line ${i + 1}${col >= 0 ? ` (first difference at column ${col + 1})` : ''}:\n  expected ${e[i] === undefined ? '(no line)' : JSON.stringify(e[i])}\n  actual   ${a[i] === undefined ? '(no line)' : JSON.stringify(a[i])}`
+    );
+  }
+  return out.join('\n') || '(outputs look the same line by line; check trailing output or the exit code)';
 }
 
 function validCode(code: unknown, target: TargetProfile): string | undefined {
@@ -158,7 +190,7 @@ export interface Translation {
   stats: AgentStats;
 }
 
-export async function translate(db: Stdb, ctx: LegacyContext, target: TargetProfile, onReject?: (p: string) => void): Promise<Translation> {
+export async function translate(db: Stdb, ctx: LegacyContext, target: TargetProfile, examples: Example[], onReject?: (p: string) => void): Promise<Translation> {
   const ruleIds = new Set(ctx.rules.map(r => r.id));
   const r = await runToolLoop({
     db,
@@ -170,7 +202,8 @@ export async function translate(db: Stdb, ctx: LegacyContext, target: TargetProf
       legacyBlock(ctx),
       '## Your task',
       contract(target),
-      'In rule_map, give for every business rule the line range in YOUR code that implements it (1-based, inclusive).',
+      examplesBlock(examples),
+      'In rule_map, give for EVERY business rule listed above the line range in YOUR code that implements it (1-based, inclusive).',
     ].join('\n\n'),
     tools: [
       {
@@ -207,11 +240,15 @@ export async function translate(db: Stdb, ctx: LegacyContext, target: TargetProf
         const e = Number(m.end_line);
         if (!(s >= 1 && e >= s && e <= lines)) return `rule_map line range ${s}-${e} for ${m.rule_id} is outside the code (1-${lines})`;
       }
+      const mapped = new Set((a.rule_map as Record<string, unknown>[]).map(m => String(m.rule_id)));
+      const missing = [...ruleIds].filter(id => !mapped.has(id));
+      if (missing.length) return `rule_map is missing ${missing.length} rule(s): ${missing.join(', ')}. Map every rule`;
       return undefined;
     },
     onReject,
     maxTurns: 5,
-    maxTokens: 20000,
+    maxTokens: 12000,
+    thinking: false,
   });
   const a = r.answer;
   return {
@@ -328,7 +365,7 @@ export async function debugFix(
         .slice(0, 5)
         .map(
           (f, i) =>
-            `### Failing case ${i + 1}: ${f.name}\nInput:\n\`\`\`\n${f.input.slice(0, 1500)}\n\`\`\`\nExpected (legacy):\n\`\`\`\n${f.expected.slice(0, 2000)}\n\`\`\`\nActual (modern):\n\`\`\`\n${f.actual.slice(0, 2000)}\n\`\`\`` +
+            `### Failing case ${i + 1}: ${f.name}\nstdin: ${JSON.stringify(f.input.slice(0, 1500))}\nDifferences (JSON-quoted so spaces are visible):\n${lineDiff(f.expected, f.actual)}` +
             (f.stderr.trim() ? `\nstderr:\n\`\`\`\n${f.stderr.slice(0, 800)}\n\`\`\`` : '')
         )
         .join('\n\n');
@@ -376,7 +413,8 @@ export async function debugFix(
     },
     onReject,
     maxTurns: 5,
-    maxTokens: 20000,
+    maxTokens: 12000,
+    thinking: false,
   });
   return { code: String(r.answer.code), diagnosis: String(r.answer.diagnosis ?? ''), fix_summary: String(r.answer.fix_summary ?? ''), stats: stats(r) };
 }

@@ -112,3 +112,12 @@ describe('targets and splits', () => {
     assert.equal(stripLineNumbers('x = 1\n   2| b'), 'x = 1\n   2| b');
   });
 });
+
+describe('lineDiff', () => {
+  it('shows only differing lines, with the first differing column', async () => {
+    const { lineDiff } = await import('../src/modernize/agents.ts');
+    const d = lineDiff('A\nEMPLOYEES     0\nC', 'A\nEMPLOYEES    0\nC');
+    assert.match(d, /line 2 \(first difference at column 14\)/);
+    assert.doesNotMatch(d, /line 1|line 3/);
+  });
+});

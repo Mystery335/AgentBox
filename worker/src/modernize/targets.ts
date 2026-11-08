@@ -36,7 +36,7 @@ const TARGETS: TargetProfile[] = [
     file: 'Main.java',
     build: 'mkdir -p /tmp/classes && javac -d /tmp/classes /work/Main.java',
     run: 'java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xshare:off -cp /tmp/classes Main',
-    notes: 'One public class named Main. java.base only. Use BigDecimal with RoundingMode.HALF_UP for money. Read stdin with BufferedReader. Exit codes with System.exit(n).',
+    notes: 'One public class named Main with `public static void main(String[] args) throws Exception`; all helpers are static methods of Main. java.base only. Use BigDecimal with RoundingMode.HALF_UP for money. Read stdin with BufferedReader. Exit codes with System.exit(n).',
   },
   {
     id: 'typescript',
