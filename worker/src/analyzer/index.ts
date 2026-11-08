@@ -10,7 +10,7 @@ import { Stdb } from '../stdb.ts';
 import { analyzeComponent, analyzeSystem, ProjectView, type ComponentAnalysis, type LlmStats, type SystemAnalysis } from './agent.ts';
 
 const llmNote = (l?: LlmStats) =>
-  l ? `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens (${l.reasoning_tokens.toLocaleString('en-US')} reasoning)${l.cached_turns ? `, ${l.cached_turns}/${l.turns} turns from cache` : ''}` : 'no model call (empty file)';
+  l ? `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens (${l.reasoning_tokens.toLocaleString('en-US')} reasoning)${l.cached_turns ? `, ${l.cached_turns}/${l.turns} turns replayed from cache` : ', live'}` : 'no model call (empty file)';
 import { decideVerifiability, scanProject, type Component, type ScanResult } from './scan.ts';
 import { probeCompile } from './runtime.ts';
 

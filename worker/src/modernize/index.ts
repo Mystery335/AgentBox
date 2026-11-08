@@ -17,7 +17,13 @@ import path from 'node:path';
 import { AGENTBOX_ROOT, dockerizeZip, type LegacyBundle } from '../dockerize.ts';
 import { LEGACY_DIR, shq } from '../analyzer/runtime.ts';
 import { Stdb, type Row } from '../stdb.ts';
-import { debugFix, loadLegacyContext, translate, writeTests, type Failure, type GeneratedCase, type LegacyContext, type RuleRow, type StoredComponent } from './agents.ts';
+import { debugFix, loadLegacyContext, translate, writeTests, type AgentStats, type Failure, type GeneratedCase, type LegacyContext, type RuleRow, type StoredComponent } from './agents.ts';
+
+/** Which model did an agent's work, as NVIDIA reported it, and whether the answer was live or replayed. */
+export const nemotronNote = (s: AgentStats) =>
+  `Nemotron: ${s.models.join(', ') || 'model not reported'}, ${s.turns} turn${s.turns === 1 ? '' : 's'}, ${s.toolCalls} tool call${s.toolCalls === 1 ? '' : 's'}, ` +
+  `${(s.promptTokens + s.completionTokens).toLocaleString('en-US')} tokens (${s.reasoningTokens.toLocaleString('en-US')} reasoning), ` +
+  (s.cachedTurns ? `${s.cachedTurns}/${s.turns} turn${s.turns === 1 ? '' : 's'} replayed from cache` : 'live');
 import { canonical, NORMALIZATION_POLICY, runBatch, type BatchResult, type CaseInput } from './sandbox.ts';
 import { pickTarget, type TargetProfile } from './targets.ts';
 
@@ -156,7 +162,9 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
   await event('verifier', 'Designing test inputs from the business rules');
   let gen: GeneratedCase[];
   try {
-    gen = (await writeTests(db, ctx, problem => void event('verifier', `Tests rejected (${problem.slice(0, 160)}); retrying`))).cases;
+    const designed = await writeTests(db, ctx, problem => void event('verifier', `Tests rejected (${problem.slice(0, 160)}); retrying`));
+    gen = designed.cases;
+    await event('verifier', `Designed ${gen.length} test inputs. ${nemotronNote(designed.stats)}`);
   } catch (e) {
     return fail(`test design failed: ${e instanceof Error ? e.message : e}`);
   }
@@ -247,7 +255,7 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
       await event('translator', `Could not map ${m.rule_id}: ${e instanceof Error ? e.message.slice(0, 120) : e}`);
     }
   }
-  await event('translator', `Wrote ${target.file}: ${code.split('\n').length} lines, ${tr.rule_map.length}/${ctx.rules.length} rules mapped to modern lines. Nemotron: ${tr.stats.turns} turns, ${tr.stats.reasoningTokens} reasoning tokens`);
+  await event('translator', `Wrote ${target.file}: ${code.split('\n').length} lines, ${tr.rule_map.length}/${ctx.rules.length} rules mapped to modern lines. ${nemotronNote(tr.stats)}`);
 
   await db.setRunStatus(runId, 'verifying');
 
@@ -314,7 +322,7 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
       break;
     }
     history.push(`${fix.diagnosis} -> ${fix.fix_summary}`.slice(0, 400));
-    await event('debugger', `Diagnosis: ${fix.diagnosis.slice(0, 300)}`);
+    await event('debugger', `Diagnosis: ${fix.diagnosis.slice(0, 300)} (${nemotronNote(fix.stats)})`);
     code = fix.code;
     codeDir = await writeCode(attempt, code);
     await db.addCodeVersion(runId, attempt, code, sha256(code), '');
@@ -357,9 +365,10 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
     await report('failed', reason);
     return fail(reason, base);
   }
-  const reason = `All ${cases.length} cases identical to the legacy program (${holdoutTotal} unseen holdout cases included), stable on a shadow run`;
+  // Say what was shown, no more: identical on these inputs, not equivalent on every input.
+  const reason = `All ${cases.length} tested cases match the legacy program (${holdoutTotal} unseen holdout cases included), stable on a shadow run`;
   await report('ready_for_cutover', reason);
-  await event('verifier', `PROOF COMPLETE: ${reason}`);
+  await event('verifier', `ALL TESTED CASES MATCH: ${reason}. This covers the tested inputs only, not every possible input.`);
   await db.finishRun(runId, 'ready_for_cutover');
   return { runId, component: component.name, target: target.label, status: 'ready_for_cutover', ...base, reason };
 }

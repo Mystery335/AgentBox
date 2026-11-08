@@ -247,3 +247,28 @@
 }
 
 .nm-languages .nm-select.nm-long-value > span { left: auto; right: 14px; }
+
+/* Worker-command flow */
+.nm-form {
+  height: auto;
+  min-height: 680px;
+}
+.nm-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.nm-live input {
+  width: 16px;
+  height: 16px;
+  accent-color: #977dff;
+}
+.nm-confirmation .nm-command {
+  max-height: none;
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}

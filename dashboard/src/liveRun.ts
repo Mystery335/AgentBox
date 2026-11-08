@@ -391,7 +391,8 @@ export function statusLabel(status: string): string {
       verifying: "Verifying",
       debugging: "Debugging",
       shadow: "Shadow run",
-      ready_for_cutover: "Verified · ready for cutover",
+      // Identical on the tested inputs only; not a proof of equivalence.
+      ready_for_cutover: "All tested cases match",
       failed: "Failed",
     } as Record<string, string>
   )[status] ?? status;
