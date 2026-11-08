@@ -1,0 +1,170 @@
+.ws-activity .ws-project {
+  width: 770px;
+}
+.ws-activity .ws-heading > .ws-badge {
+  width: 81.4px;
+}
+.ws-debugging {
+  background: #273f32;
+  color: #d6f3b3;
+}
+.aa-details {
+  display: grid;
+  grid-template-columns: 748px 414px;
+  gap: 18px;
+}
+.aa-timeline,
+.aa-inspector {
+  height: 608px;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.aa-timeline {
+  width: 748px;
+}
+.aa-timeline h2 {
+  font-size: 17px;
+}
+.aa-timeline > p {
+  font-size: 11px;
+}
+.aa-timeline ol {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.aa-event {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 712px;
+  height: 88px;
+  padding: 10px;
+  background: transparent;
+  border: 0;
+  color: #f2e6ee;
+  text-align: left;
+  border-radius: 10px;
+}
+.aa-event:hover,
+.aa-event:focus-visible {
+  background: #384365;
+}
+.aa-event-meta {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.aa-event time {
+  font-size: 10px;
+}
+.aa-agent-name {
+  font-size: 9px;
+  font-weight: 600;
+}
+.aa-event strong {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.aa-event-detail {
+  font-size: 11px;
+  line-height: 1.45;
+}
+.aa-event .ws-badge {
+  min-width: 68.2px;
+}
+.aa-event .ws-complete {
+  min-width: 74.8px;
+}
+.aa-event .ws-failed {
+  min-width: 64px;
+}
+.aa-inspector {
+  width: 414px;
+  align-items: flex-start;
+}
+.aa-agent-badge {
+  min-width: 127.6px;
+}
+.aa-inspector h2 {
+  font-size: 21px;
+  font-weight: 600;
+  min-height: 31.5px;
+  line-height: 1.45;
+  white-space: normal;
+}
+.aa-task-label {
+  font-size: 11px;
+  font-weight: 600;
+}
+.aa-task {
+  width: 370px;
+  height: 60px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.aa-inspector hr {
+  margin: 0;
+  width: 378px;
+  height: 1px;
+  background: #4b5077;
+  border: 0;
+  flex-shrink: 0;
+}
+.aa-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.aa-inputs {
+  width: 370px;
+  min-height: 76px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.aa-output {
+  width: 370px;
+  height: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.aa-attempt {
+  min-width: 114.4px;
+}
+.aa-next {
+  width: 370px;
+  height: 60px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.aa-inspector .button {
+  flex-shrink: 0;
+}
+.aa-security {
+  height: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.aa-security h2 {
+  font-size: 13px;
+}
+.aa-security p {
+  font-size: 12px;
+}
+.aa-timeline > :not(.ws-trim),
+.aa-inspector > :not(.ws-trim) {
+  position: relative;
+}

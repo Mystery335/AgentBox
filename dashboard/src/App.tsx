@@ -31,9 +31,11 @@ const subscribeToRoute = (callback: () => void) => {
   return () => window.removeEventListener("hashchange", callback);
 };
 function App() {
-  const isWorkspace = useSyncExternalStore(subscribeToRoute, () =>
-    window.location.hash.startsWith("#/workspace"),
+  const route = useSyncExternalStore(
+    subscribeToRoute,
+    () => window.location.hash,
   );
+  const isWorkspace = route.startsWith("#/workspace");
   const dialog = useRef<HTMLDialogElement>(null);
   const [mode, setMode] = useState<"new" | "dashboard">("new");
   const [files, setFiles] = useState<File[]>([]);
@@ -51,7 +53,10 @@ function App() {
   return (
     <>
       {isWorkspace ? (
-        <Workspace onNew={() => open("new")} />
+        <Workspace
+          onNew={() => open("new")}
+          activity={route.startsWith("#/workspace/activity")}
+        />
       ) : (
         <div className="landing">
           <header className="navigation">

@@ -1,3 +1,5 @@
+import AgentActivity from "./AgentActivity";
+import { activityEvents } from "./activityData";
 import { useRef, useState } from "react";
 import Button from "./components/Button";
 import "./Workspace.css";
@@ -198,7 +200,14 @@ function CodePane({ modern, lines }: { modern?: boolean; lines: string[] }) {
     </section>
   );
 }
-export default function Workspace({ onNew }: { onNew: () => void }) {
+export default function Workspace({
+  onNew,
+  activity = false,
+}: {
+  onNew: () => void;
+  activity?: boolean;
+}) {
+  const [activityAgent, setActivityAgent] = useState(2);
   const [tab, setTab] = useState("Code & rules");
   const [selected, setSelected] = useState("BR-04");
   const [filter, setFilter] = useState("All");
@@ -236,6 +245,7 @@ export default function Workspace({ onNew }: { onNew: () => void }) {
             },
             agents: stages,
             visibleEvidence: tests,
+            ...(activity ? { timeline: activityEvents } : {}),
           },
           null,
           2,
@@ -252,11 +262,12 @@ export default function Workspace({ onNew }: { onNew: () => void }) {
   };
   const navigate = (next: string) => {
     setTab(next);
+    if (activity) window.location.hash = "/workspace";
     document.getElementById("ws-content")?.scrollIntoView({ block: "start" });
   };
   return (
     <div className="workspace-viewport">
-      <div className="workspace-shell">
+      <div className={`workspace-shell ${activity ? "ws-activity" : ""}`}>
         <aside className="ws-sidebar">
           <a href="#" className="brand">
             ▣ AgentBox
@@ -265,21 +276,31 @@ export default function Workspace({ onNew }: { onNew: () => void }) {
           <nav aria-label="Workspace navigation">
             <button
               className={
-                tab !== "Validation" && tab !== "Documentation" ? "active" : ""
+                !activity && tab !== "Validation" && tab !== "Documentation"
+                  ? "active"
+                  : ""
               }
               onClick={() => navigate("Code & rules")}
             >
               ▦ &nbsp;Modernizations
             </button>
-            <button onClick={() => showAgent(2)}>◇ &nbsp;Agent activity</button>
             <button
-              className={tab === "Validation" ? "active" : ""}
+              className={activity ? "active" : ""}
+              aria-current={activity ? "page" : undefined}
+              onClick={() => {
+                window.location.hash = "/workspace/activity";
+              }}
+            >
+              ◇ &nbsp;Agent activity
+            </button>
+            <button
+              className={!activity && tab === "Validation" ? "active" : ""}
               onClick={() => navigate("Validation")}
             >
               ✓ &nbsp;Validation
             </button>
             <button
-              className={tab === "Documentation" ? "active" : ""}
+              className={!activity && tab === "Documentation" ? "active" : ""}
               onClick={() => navigate("Documentation")}
             >
               ▤ &nbsp;Documentation
@@ -307,26 +328,31 @@ export default function Workspace({ onNew }: { onNew: () => void }) {
             <div className="ws-heading">
               <div className="ws-project">
                 <p>MODERNIZATION / RUN 0042</p>
-                <h1>Registration service</h1>
+                <h1>{activity ? "Agent activity" : "Registration service"}</h1>
                 <p>
-                  C → Java 21 &nbsp; · &nbsp; Run 0042 &nbsp; · &nbsp; Example
-                  run data
+                  {activity
+                    ? "Run 0042   ·   Four specialized agents   ·   Example live state"
+                    : "C → Java 21   ·   Run 0042   ·   Example run data"}
                 </p>
               </div>
-              <Badge text="Needs review" />
+              <Badge text={activity ? "Debugging" : "Needs review"} />
               <Button variant="neutral" size="small" onPress={exportReport}>
                 Export report
               </Button>
-              <Button size="small" onPress={onNew}>
-                + New modernization
-              </Button>
+              {!activity && (
+                <Button size="small" onPress={onNew}>
+                  + New modernization
+                </Button>
+              )}
             </div>
             <div className="ws-stages">
               {stages.map((stage, i) => (
                 <button
                   className="ws-stage"
                   key={stage.title}
-                  onClick={() => showAgent(i)}
+                  onClick={() =>
+                    activity ? setActivityAgent(i) : showAgent(i)
+                  }
                 >
                   <img className="ws-trim" src={art("faa64")} alt="" />
                   <div className="ws-stage-title">
@@ -361,171 +387,189 @@ export default function Workspace({ onNew }: { onNew: () => void }) {
                 </button>
               ))}
             </div>
-            <div className="ws-metrics">
-              {[
-                ["23 / 24", "Tests match"],
-                ["1", "Behavior mismatch"],
-                ["2", "Rules untested"],
-                ["1 medium", "Security finding"],
-              ].map(([value, label]) => (
-                <div key={label}>
-                  <strong>{value}</strong>
-                  <span>{label}</span>
+            {activity ? (
+              <AgentActivity
+                selected={activityAgent}
+                onSelect={setActivityAgent}
+                onInspect={(view) => {
+                  setSelected("BR-04");
+                  navigate(view);
+                }}
+              />
+            ) : (
+              <>
+                <div className="ws-metrics">
+                  {[
+                    ["23 / 24", "Tests match"],
+                    ["1", "Behavior mismatch"],
+                    ["2", "Rules untested"],
+                    ["1 medium", "Security finding"],
+                  ].map(([value, label]) => (
+                    <div key={label}>
+                      <strong>{value}</strong>
+                      <span>{label}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="ws-tabs" role="tablist" aria-label="Run views">
-              {["Overview", "Code & rules", "Validation", "Documentation"].map(
-                (name) => (
-                  <button
-                    key={name}
-                    id={`tab-${name.replaceAll(" ", "-")}`}
-                    role="tab"
-                    aria-selected={tab === name}
-                    aria-controls="ws-tab-panel"
-                    onClick={() => setTab(name)}
-                  >
-                    {name}
-                  </button>
-                ),
-              )}
-            </div>
-            <div
-              id="ws-tab-panel"
-              role="tabpanel"
-              aria-labelledby={`tab-${tab.replaceAll(" ", "-")}`}
-            >
-              {(tab === "Code & rules" || tab === "Overview") && (
-                <section className="ws-comparison ws-panel">
-                  <img className="ws-trim" src={art("d96b1")} alt="" />
-                  <div className="ws-panel-heading">
-                    <h2>Before / after</h2>
-                    <p>registration.c &nbsp;→ &nbsp; Registration.java</p>
-                    <Badge text={`Rule ${selected} selected`} />
-                  </div>
-                  <div className="ws-comparison-grid">
-                    <section className="ws-rules">
-                      <h3>BUSINESS RULES</h3>
+                <div className="ws-tabs" role="tablist" aria-label="Run views">
+                  {[
+                    "Overview",
+                    "Code & rules",
+                    "Validation",
+                    "Documentation",
+                  ].map((name) => (
+                    <button
+                      key={name}
+                      id={`tab-${name.replaceAll(" ", "-")}`}
+                      role="tab"
+                      aria-selected={tab === name}
+                      aria-controls="ws-tab-panel"
+                      onClick={() => setTab(name)}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+                <div
+                  id="ws-tab-panel"
+                  role="tabpanel"
+                  aria-labelledby={`tab-${tab.replaceAll(" ", "-")}`}
+                >
+                  {(tab === "Code & rules" || tab === "Overview") && (
+                    <section className="ws-comparison ws-panel">
+                      <img className="ws-trim" src={art("d96b1")} alt="" />
+                      <div className="ws-panel-heading">
+                        <h2>Before / after</h2>
+                        <p>registration.c &nbsp;→ &nbsp; Registration.java</p>
+                        <Badge text={`Rule ${selected} selected`} />
+                      </div>
+                      <div className="ws-comparison-grid">
+                        <section className="ws-rules">
+                          <h3>BUSINESS RULES</h3>
+                          {rules.map((item) => (
+                            <button
+                              key={item.id}
+                              className={selected === item.id ? "selected" : ""}
+                              aria-pressed={selected === item.id}
+                              onClick={() => setSelected(item.id)}
+                            >
+                              <span>
+                                {item.id} &nbsp;{item.name}
+                              </span>
+                              {item.id === "BR-04" && (
+                                <small>1 failed test · inspect evidence</small>
+                              )}
+                            </button>
+                          ))}
+                        </section>
+                        <CodePane lines={rule.before} />
+                        <CodePane modern lines={rule.after} />
+                      </div>
+                      <p className="ws-linked-rule">
+                        Linked rule: {rule.description}
+                      </p>
+                    </section>
+                  )}
+                  {tab !== "Documentation" && (
+                    <section className="ws-validation ws-panel">
+                      <img className="ws-trim" src={art("88f71")} alt="" />
+                      <div className="ws-panel-heading">
+                        <h2>Validation evidence</h2>
+                        <div
+                          className="ws-filters"
+                          aria-label="Filter validation evidence"
+                        >
+                          {[
+                            ["All", "24"],
+                            ["Failed", "1"],
+                            ["Passed", "22"],
+                            ["Fixed", "1"],
+                          ].map(([name, count]) => (
+                            <button
+                              key={name}
+                              className={filter === name ? "selected" : ""}
+                              aria-pressed={filter === name}
+                              onClick={() => setFilter(name)}
+                            >
+                              {name} {count}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>TEST CASE</th>
+                            <th>RULE</th>
+                            <th>LEGACY → JAVA</th>
+                            <th>RESULT</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tests
+                            .filter(
+                              (test) =>
+                                filter === "All" || test.result === filter,
+                            )
+                            .map((test) => (
+                              <tr key={test.name}>
+                                <td>
+                                  <button onClick={() => showEvidence(test)}>
+                                    {test.name}
+                                  </button>
+                                </td>
+                                <td>{test.rule}</td>
+                                <td>{test.output}</td>
+                                <td>
+                                  <Badge text={test.result} />
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                      {filter !== "All" && (
+                        <p className="ws-filter-note">
+                          Showing supplied example evidence. Summary counts
+                          cover the full example run.
+                        </p>
+                      )}
+                    </section>
+                  )}
+                  {tab === "Documentation" && (
+                    <section className="ws-documentation ws-panel">
+                      <h2>Registration service · Run documentation</h2>
+                      <p>
+                        Example migration from C to Java 21. The analysis agent
+                        extracted 12 business rules across 8 source files.
+                      </p>
+                      <h3>Rules available for review</h3>
                       {rules.map((item) => (
                         <button
                           key={item.id}
-                          className={selected === item.id ? "selected" : ""}
-                          aria-pressed={selected === item.id}
-                          onClick={() => setSelected(item.id)}
+                          onClick={() => {
+                            setSelected(item.id);
+                            setTab("Code & rules");
+                          }}
                         >
-                          <span>
-                            {item.id} &nbsp;{item.name}
-                          </span>
-                          {item.id === "BR-04" && (
-                            <small>1 failed test · inspect evidence</small>
-                          )}
+                          {item.id} · {item.name} →
                         </button>
                       ))}
+                      <h3>Review before release</h3>
+                      <p>
+                        The minimum-age boundary differs at age 18. Two rules
+                        remain untested and one medium security finding needs
+                        review. Source files remain read-only in the isolated
+                        workspace.
+                      </p>
                     </section>
-                    <CodePane lines={rule.before} />
-                    <CodePane modern lines={rule.after} />
-                  </div>
-                  <p className="ws-linked-rule">
-                    Linked rule: {rule.description}
-                  </p>
-                </section>
-              )}
-              {tab !== "Documentation" && (
-                <section className="ws-validation ws-panel">
-                  <img className="ws-trim" src={art("88f71")} alt="" />
-                  <div className="ws-panel-heading">
-                    <h2>Validation evidence</h2>
-                    <div
-                      className="ws-filters"
-                      aria-label="Filter validation evidence"
-                    >
-                      {[
-                        ["All", "24"],
-                        ["Failed", "1"],
-                        ["Passed", "22"],
-                        ["Fixed", "1"],
-                      ].map(([name, count]) => (
-                        <button
-                          key={name}
-                          className={filter === name ? "selected" : ""}
-                          aria-pressed={filter === name}
-                          onClick={() => setFilter(name)}
-                        >
-                          {name} {count}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>TEST CASE</th>
-                        <th>RULE</th>
-                        <th>LEGACY → JAVA</th>
-                        <th>RESULT</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tests
-                        .filter(
-                          (test) => filter === "All" || test.result === filter,
-                        )
-                        .map((test) => (
-                          <tr key={test.name}>
-                            <td>
-                              <button onClick={() => showEvidence(test)}>
-                                {test.name}
-                              </button>
-                            </td>
-                            <td>{test.rule}</td>
-                            <td>{test.output}</td>
-                            <td>
-                              <Badge text={test.result} />
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                  {filter !== "All" && (
-                    <p className="ws-filter-note">
-                      Showing supplied example evidence. Summary counts cover
-                      the full example run.
-                    </p>
                   )}
-                </section>
-              )}
-              {tab === "Documentation" && (
-                <section className="ws-documentation ws-panel">
-                  <h2>Registration service · Run documentation</h2>
-                  <p>
-                    Example migration from C to Java 21. The analysis agent
-                    extracted 12 business rules across 8 source files.
-                  </p>
-                  <h3>Rules available for review</h3>
-                  {rules.map((item) => (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        setSelected(item.id);
-                        setTab("Code & rules");
-                      }}
-                    >
-                      {item.id} · {item.name} →
-                    </button>
-                  ))}
-                  <h3>Review before release</h3>
-                  <p>
-                    The minimum-age boundary differs at age 18. Two rules remain
-                    untested and one medium security finding needs review.
-                    Source files remain read-only in the isolated workspace.
-                  </p>
-                </section>
-              )}
-            </div>
-            <p className="ws-disclaimer">
-              Example evidence only · A passing test suite does not establish
-              equivalence for every possible input.
-            </p>
+                </div>
+                <p className="ws-disclaimer">
+                  Example evidence only · A passing test suite does not
+                  establish equivalence for every possible input.
+                </p>
+              </>
+            )}
           </main>
           <footer className="ws-footer">
             <p>AgentBox</p>
