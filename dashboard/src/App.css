@@ -615,3 +615,7 @@ select {
     padding: 28px 20px;
   }
 }
+
+.app-footer{height:auto;min-height:112px;padding:32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:20px;border-top:1px solid #4b5077;background:#0c142a;color:#f2e6ee}
+.app-footer .brand{font-size:18px}.app-footer p{font-size:12px;color:#c9bbdc}.app-footer>a:last-child{font-size:12px;color:#d6c6f7}
+@media(max-width:650px){.app-footer{padding:24px 18px;flex-direction:column;align-items:flex-start}}

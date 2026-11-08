@@ -1,3 +1,6 @@
+import LiveNewModernization from "./LiveNewModernization";
+import LiveOverview from "./LiveOverview";
+import LiveAgentActivity from "./LiveAgentActivity";
 import { useSyncExternalStore } from "react";
 import Button from "./components/Button";
 import Workspace from "./Workspace";
@@ -16,14 +19,14 @@ const agents = [
     "819a9",
   ],
   [
-    "Debug",
-    "Investigate mismatches, propose targeted fixes and track each repair attempt.",
-    "dd345",
-  ],
-  [
     "Validate",
     "Run both versions against shared inputs and surface differences for review.",
     "31f35",
+  ],
+  [
+    "Debug",
+    "Investigate validation failures, apply targeted fixes and validate the updated code again.",
+    "dd345",
   ],
 ];
 const subscribeToRoute = (callback: () => void) => {
@@ -42,7 +45,13 @@ function App() {
   };
   return (
     <>
-      {isWorkspace ? (
+      {(route.startsWith("#/workspace/activity") || route.startsWith("#/workspace/validation") || route.startsWith("#/workspace/documentation")) ? (
+        <LiveAgentActivity documentation={route.startsWith("#/workspace/documentation")} validation={route.startsWith("#/workspace/validation")} requestedRunId={new URLSearchParams(route.split("?")[1] ?? "").get("run") ?? undefined} />
+      ) : route.startsWith("#/workspace/new") ? (
+        <LiveNewModernization />
+      ) : route.split("?")[0].replace(/\/$/, "") === "#/workspace" ? (
+        <LiveOverview />
+      ) : isWorkspace ? (
         <Workspace
           onNew={() => open("new")}
           activity={route.startsWith("#/workspace/activity")}
@@ -59,7 +68,7 @@ function App() {
             <nav aria-label="Main navigation">
               <a href="#product">The product</a>
               <a href="#workflow">How it works</a>
-              <a href="#stack">Built with</a>
+              <a href="#translation">Translation</a>
               <Button variant="secondary" onPress={() => open("dashboard")}>
                 Open dashboard →
               </Button>
@@ -135,19 +144,16 @@ function App() {
                 </div>
               </div>
             </section>
-            <section className="stack" id="stack">
-              <p className="eyebrow">BUILT WITH</p>
-              <p>
-                NVIDIA Nemotron / NIM <span>·</span> SpacetimeDB <span>·</span>{" "}
-                Docker <span>·</span> GnuCOBOL
-              </p>
+            <section className="stack" id="translation">
+              <p className="eyebrow">TRANSLATE WITH CONTEXT</p>
+              <p>Understand the legacy logic. Rewrite it. Check the results.</p>
             </section>
             <section className="workflow" id="workflow">
               <p className="eyebrow">01 / THE WORKFLOW</p>
               <h2>Four agents. One reviewable process.</h2>
               <p className="workflow-description">
-                Follow the work from understanding the source to investigating
-                the final test results.
+                Analyze the source, rewrite it, validate the results, then debug
+                failures and validate again.
               </p>
               <div className="agent-grid">
                 {agents.map(([title, description, icon], i) => (
@@ -157,7 +163,7 @@ function App() {
                     <h3>{title}</h3>
                     <p className="agent-description">{description}</p>
                     <img className="agent-icon" src={asset(icon)} alt="" />
-                    {i === 2 && (
+                    {i === 3 && (
                       <img className="activity" src={asset("14845")} alt="" />
                     )}
                   </article>
@@ -202,18 +208,16 @@ function App() {
               <p>Upload source. Watch the agents. Review the evidence.</p>
             </section>
           </main>
-          <footer>
-            <a className="brand" href="#">
-              ▣ AgentBox
-            </a>
-            <p>A multi-agent workspace for legacy software modernization.</p>
-            <p>Frontend: Vite · React · TypeScript</p>
-          </footer>
           <div className="circuit-overlay" aria-hidden="true">
             <img src={asset("a9e67")} alt="" />
           </div>
         </div>
       )}
+      <footer className="app-footer">
+        <a className="brand" href="#">▣ AgentBox</a>
+        <p>Understand the past. Build what’s next.</p>
+        <a href="#/workspace">Open workspace →</a>
+      </footer>
     </>
   );
 }
