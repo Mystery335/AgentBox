@@ -1,39 +1,47 @@
 import { useRef, useState } from "react";
 import Button from "./components/Button";
 import Badge from "./components/StatusBadge";
-import { validationTests } from "./validationData";
+import type { LiveRun } from "./liveRun";
 import "./ValidationInvestigation.css";
 
+const FILTERS = ["All", "Failed", "Passed", "Fixed"] as const;
+const clip = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
+
 export default function ValidationInvestigation({
+  live,
   onNavigate,
   onInspect,
 }: {
+  live: LiveRun;
   onNavigate: (view: string) => void;
-  onInspect: (rule: string) => void;
+  onInspect: (ruleKey: string) => void;
 }) {
-  const [filter, setFilter] = useState("All");
-  const [selectedRule, setSelectedRule] = useState("BR-04");
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All");
+  const [selectedKey, setSelectedKey] = useState("");
   const fixDialog = useRef<HTMLDialogElement>(null);
-  const selected = validationTests.find((test) => test.rule === selectedRule)!;
-  const visibleTests = validationTests.filter(
-    (test) => filter === "All" || test.result === filter,
-  );
-  const changeFilter = (next: string) => {
-    setFilter(next);
-    const matches = validationTests.filter(
-      (test) => next === "All" || test.result === next,
-    );
-    if (!matches.some((test) => test.rule === selectedRule))
-      setSelectedRule(matches[0].rule);
-  };
+  const tests = live.tests;
+  const visibleTests = tests.filter((t) => filter === "All" || t.result === filter);
+  const selected =
+    visibleTests.find((t) => t.key === selectedKey) ??
+    visibleTests.find((t) => t.result === "Failed") ??
+    visibleTests[0];
+  const count = (name: (typeof FILTERS)[number]) =>
+    name === "All" ? tests.length : tests.filter((t) => t.result === name).length;
+  const run = tests.filter((t) => t.result !== "Waiting").length;
+  const matching = tests.filter((t) => t.result === "Passed" || t.result === "Fixed").length;
+  const pct = run ? `${((matching / run) * 100).toFixed(1)}%` : "—";
+  const target = live.run?.targetLanguage || "modern";
+  const lastDebug = live.debugs[live.debugs.length - 1];
+
   return (
     <>
       <div className="vi-metrics">
         {[
-          ["95.8%", "23 of 24 completed tests match"],
-          ["1 failed", "Requires investigation"],
-          ["1 fixed", "Passed after repair"],
-          ["0 skipped", "2 business rules remain untested"],
+          [pct, `${matching} of ${run} completed tests match`],
+          [`${count("Failed")} failed`, count("Failed") ? "Requires investigation" : "No open mismatches"],
+          [`${count("Fixed")} fixed`, "Passed after repair"],
+          [`${live.metrics.untested} untested`, "Business rules without a test"],
         ].map(([value, label]) => (
           <div key={label}>
             <strong>{value}</strong>
@@ -70,40 +78,35 @@ export default function ValidationInvestigation({
           <img className="ws-trim" src="/design/workspace/88f71.svg" alt="" />
           <div className="vi-filters">
             <h2 id="vi-tests-title">Test cases</h2>
-            {[
-              ["All", "24"],
-              ["Failed", "1"],
-              ["Passed", "22"],
-              ["Fixed", "1"],
-            ].map(([name, count]) => (
+            {FILTERS.map((name) => (
               <button
                 key={name}
                 className={`ws-badge ${name === "Failed" ? "ws-failed" : ""}`}
                 aria-pressed={filter === name}
-                onClick={() => changeFilter(name)}
+                onClick={() => setFilter(name)}
               >
-                {name} {count}
+                {name} {count(name)}
               </button>
             ))}
           </div>
-          <table aria-label="Example validation test cases" aria-describedby="vi-example-note">
+          <table aria-label="Validation test cases" aria-describedby="vi-example-note">
             <thead>
               <tr>
                 <th scope="col">TEST CASE</th>
                 <th scope="col">RULE</th>
-                <th scope="col">LEGACY → JAVA</th>
+                <th scope="col">LEGACY → {target.toUpperCase()}</th>
                 <th scope="col">RESULT</th>
               </tr>
             </thead>
             <tbody>
               {visibleTests.map((test) => (
-                <tr key={test.rule} aria-selected={selectedRule === test.rule}>
+                <tr key={test.key} aria-selected={selected?.key === test.key}>
                   <td>
                     <button
-                      onClick={() => setSelectedRule(test.rule)}
-                      aria-pressed={selectedRule === test.rule}
+                      onClick={() => setSelectedKey(test.key)}
+                      aria-pressed={selected?.key === test.key}
                     >
-                      {test.name}
+                      {test.label} · {test.name}
                     </button>
                   </td>
                   <td>{test.rule}</td>
@@ -116,8 +119,9 @@ export default function ValidationInvestigation({
             </tbody>
           </table>
           <p className="vi-example-note" id="vi-example-note">
-            Showing supplied example cases; summary counts cover the full
-            24-test example run.
+            {tests.length
+              ? `${tests.length} cases: inputs designed by Nemotron, expected outputs recorded by running the legacy program. Holdout cases are never shown to the Debugger.`
+              : "No test cases yet."}
           </p>
         </section>
         <section
@@ -126,33 +130,47 @@ export default function ValidationInvestigation({
           aria-live="polite"
         >
           <img className="ws-trim" src="/design/validation/d5e92.svg" alt="" />
-          <div className="vi-evidence-heading">
-            <h2 id="vi-evidence-title">{selected.title}</h2>
-            <Badge text={selected.result} />
-          </div>
-          <p>{selected.description}</p>
-          <div className="vi-outputs">
-            {[
-              ["TEST INPUT", selected.input, selected.inputNote],
-              ["ORIGINAL C", selected.original, selected.originalNote],
-              ["GENERATED JAVA", selected.generated, selected.generatedNote],
-              ["EXPECTED BEHAVIOR", selected.expected, selected.expectedNote],
-            ].map(([label, value, note]) => (
-              <div key={label}>
-                <h3>{label}</h3>
-                <strong
-                  className={
-                    label === "GENERATED JAVA" && selected.result === "Failed"
-                      ? "vi-mismatch"
-                      : ""
-                  }
-                >
-                  {value}
-                </strong>
-                <p>{note}</p>
+          {selected ? (
+            <>
+              <div className="vi-evidence-heading">
+                <h2 id="vi-evidence-title">
+                  {selected.label} · {selected.name}
+                </h2>
+                <Badge text={selected.result} />
               </div>
-            ))}
-          </div>
+              <p>
+                {selected.rule} · {selected.kind} case · {selected.split} set
+              </p>
+              <div className="vi-outputs">
+                {[
+                  ["TEST INPUT", selected.input, "Fed on standard input"],
+                  ["ORIGINAL", selected.legacyOutput, `${live.run?.legacyLanguage ?? "Legacy"} program in its Docker image`],
+                  [
+                    `GENERATED ${target.toUpperCase()}`,
+                    selected.result === "Waiting" ? "(not run yet)" : selected.modernOutput,
+                    selected.output,
+                  ],
+                  ["EXPECTED BEHAVIOR", selected.legacyOutput, "Identical to the original"],
+                ].map(([label, value, note]) => (
+                  <div key={label}>
+                    <h3>{label}</h3>
+                    <strong
+                      className={
+                        label.startsWith("GENERATED") && selected.result === "Failed"
+                          ? "vi-mismatch"
+                          : ""
+                      }
+                    >
+                      <pre className="ws-evidence-pre">{value || "(empty)"}</pre>
+                    </strong>
+                    <p>{note}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <h2 id="vi-evidence-title">No test selected</h2>
+          )}
         </section>
         <section
           className="ws-panel vi-history"
@@ -160,52 +178,41 @@ export default function ValidationInvestigation({
         >
           <img className="ws-trim" src="/design/validation/ea934.svg" alt="" />
           <h2 id="vi-history-title">Debug history</h2>
-          {selected.result === "Failed" ? (
-            <>
-              <p>Attempt 1 · Reworked validation branch → rerun failed</p>
-              <p className="vi-latest-attempt">
-                Attempt 2 · Proposed age &gt;= 18 boundary fix → awaiting rerun
+          {selected?.history.length ? (
+            selected.history.map((h, i) => (
+              <p
+                key={h.attempt}
+                className={i === selected.history.length - 1 ? "vi-latest-attempt" : ""}
+              >
+                Attempt {h.attempt} · {h.passed ? "identical to legacy" : "differs from legacy"}
+                {h.attempt > 0 && live.debugs.find((d) => d.attempt === h.attempt)
+                  ? ` · after fix: ${clip(live.debugs.find((d) => d.attempt === h.attempt)!.fixSummary, 140)}`
+                  : ""}
               </p>
-            </>
-          ) : selected.result === "Fixed" ? (
-            <>
-              <p>Earlier attempt · Input length boundary failed</p>
-              <p className="vi-latest-attempt">
-                Later attempt · Preserved maximum length of 255 → passed after
-                repair
-              </p>
-            </>
+            ))
           ) : (
-            <>
-              <p>
-                Shared input produced matching outputs in both implementations.
-              </p>
-              <p className="vi-latest-attempt">
-                No repair required for this example test.
-              </p>
-            </>
+            <p>This test has not been run yet.</p>
           )}
           <div className="vi-actions">
-            {selected.result === "Failed" && (
-              <Button
-                size="small"
-                onPress={() => fixDialog.current?.showModal()}
-              >
-                Inspect proposed fix
+            {lastDebug && (
+              <Button size="small" onPress={() => fixDialog.current?.showModal()}>
+                Inspect latest fix
               </Button>
             )}
-            <Button
-              variant="neutral"
-              size="small"
-              onPress={() => onInspect(selected.rule)}
-            >
-              View linked code
-            </Button>
+            {selected?.ruleKey && (
+              <Button
+                variant="neutral"
+                size="small"
+                onPress={() => onInspect(selected.ruleKey)}
+              >
+                View linked code
+              </Button>
+            )}
           </div>
         </section>
         <p className="vi-disclaimer">
-          Fixed = previously failed, then passed on a later attempt. Earlier
-          evidence remains available.
+          Fixed = failed on an earlier attempt, then passed on a later one.
+          Every attempt's results stay in SpacetimeDB.
         </p>
       </div>
       <dialog
@@ -218,33 +225,30 @@ export default function ValidationInvestigation({
       >
         <button
           className="close"
-          aria-label="Close proposed fix"
+          aria-label="Close fix details"
           onClick={() => fixDialog.current?.close()}
         >
           ×
         </button>
-        <p className="eyebrow">RUN 0042 / BR-04 / ATTEMPT 2</p>
-        <h2 id="vi-fix-title">Proposed boundary fix</h2>
-        <p>Registration.java · line 2</p>
-        <div className="vi-fix-code">
-          <p>Current implementation</p>
-          <pre>{"if (age > 18) {"}</pre>
-          <p>Proposed change</p>
-          <pre>{"if (age >= 18) {"}</pre>
-        </div>
-        <Badge text="Awaiting rerun" />
-        <p>
-          This example proposal restores the age-18 boundary. It has not been
-          applied or rerun.
-        </p>
-        <Button
-          onPress={() => {
-            fixDialog.current?.close();
-            onInspect("BR-04");
-          }}
-        >
-          View linked code →
-        </Button>
+        {lastDebug && (
+          <>
+            <p className="eyebrow">
+              {live.run?.id} / DEBUG ATTEMPT {lastDebug.attempt}
+            </p>
+            <h2 id="vi-fix-title">{lastDebug.errorSummary}</h2>
+            <div className="vi-fix-code">
+              <p>Diagnosis</p>
+              <pre>{lastDebug.diagnosis}</pre>
+              <p>Fix applied</p>
+              <pre>{lastDebug.fixSummary}</pre>
+            </div>
+            <Badge text={lastDebug.outcome === "fixed" ? "Fixed" : "Failed"} />
+            <p>
+              After this fix: {lastDebug.passedCount} of {lastDebug.totalCount}{" "}
+              cases identical to legacy ({lastDebug.outcome.replace("_", " ")}).
+            </p>
+          </>
+        )}
       </dialog>
     </>
   );

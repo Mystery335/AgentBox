@@ -1,86 +1,81 @@
-import { activityEvents } from "./activityData";
 import Button from "./components/Button";
+import type { LiveRun } from "./liveRun";
 import "./AgentActivity.css";
 
-const inspectors = [
+const AGENTS = [
   {
     label: "01 · Analyze & document agent",
-    title: "Documented registration business logic",
-    task: "Extract and explain the business rules in the original registration service.",
-    inputs: ["8 source files", "Protected baseline: registration.c"],
-    output: "12 business rules mapped to source code.",
-    attempt: "Analysis complete",
-    next: "Next: review the extracted business rules and documentation.",
+    task: "Scan the legacy system, compile-check every program in the sandbox, extract business rules and choose the target language.",
     action: "Inspect business rules",
     view: "Documentation",
   },
   {
     label: "02 · Rewrite agent",
-    title: "Generated Java implementation",
-    task: "Translate the C registration service to Java 21 while preserving its business rules.",
-    inputs: [
-      "8 source files",
-      "12 extracted business rules",
-      "Protected baseline: registration.c",
-    ],
-    output: "8 Java output files generated.",
-    attempt: "Rewrite complete",
-    next: "Next: compare generated code against the original implementation.",
+    task: "Translate the chosen program into the target language, preserving every business rule, and map each rule to modern lines.",
     action: "Inspect generated code",
     view: "Code & rules",
   },
   {
     label: "03 · Debug agent",
-    title: "Repairing a boundary mismatch",
-    task: "Preserve BR-04: registration accepts applicants aged 18 and above.",
-    inputs: [
-      "Failed test T-017",
-      "Registration.java",
-      "Protected baseline: registration.c",
-    ],
-    output: "Change age > 18 to age >= 18.",
-    attempt: "Attempt 2 of 3",
-    next: "Next: rerun validation against the unchanged source baseline.",
-    action: "Inspect code change",
-    view: "Code & rules",
+    task: "Diagnose failing debug cases against the legacy source and fix the modern code. Holdout cases are never shown to it.",
+    action: "Inspect validation evidence",
+    view: "Validation",
   },
   {
     label: "04 · Validate agent",
-    title: "Investigating a boundary mismatch",
-    task: "Compare both implementations on shared inputs, including the minimum registration age.",
-    inputs: [
-      "Test T-017 · age = 18",
-      "Registration.java",
-      "Protected baseline: registration.c",
-    ],
-    output: "Legacy: true → Java: false.",
-    attempt: "23 / 24 tests match",
-    next: "Next: inspect the failed test and review the proposed boundary repair.",
+    task: "Run the legacy and modern programs on the same inputs in isolated containers and compare outputs and exit codes.",
     action: "Inspect validation evidence",
     view: "Validation",
   },
   {
     label: "System · Isolated workspace",
-    title: "Created isolated run workspace",
-    task: "Keep the original source protected while the agents analyze and rewrite the service.",
-    inputs: ["Run 0042", "Source: registration.c", "Isolated run workspace"],
-    output: "Source mounted read-only.",
-    attempt: "Workspace ready",
-    next: "Baseline write and network access attempts were blocked in this example run.",
+    task: "Dockerize the uploaded legacy system and keep every run isolated.",
     action: "Inspect run overview",
     view: "Overview",
   },
 ];
+
 export default function AgentActivity({
+  live,
   selected,
   onSelect,
   onInspect,
 }: {
+  live: LiveRun;
   selected: number;
   onSelect: (value: number) => void;
   onInspect: (view: string) => void;
 }) {
-  const inspector = inspectors[selected];
+  const agent = AGENTS[selected] ?? AGENTS[0];
+  const stage = live.stages[selected];
+  const mine = live.timeline.filter((e) => e.stage === selected);
+  const latest = mine[0];
+  const failing = live.tests.filter((t) => t.result === "Failed" && t.split === "debug").length;
+  const inputs = [
+    [
+      `Legacy system: ${live.run?.legacyName ?? "—"} (${live.run?.legacyLanguage ?? "?"})`,
+      `${live.doc.rules.length} business rules`,
+      `Runtime: ${live.run?.legacyRuntime ?? "—"}`,
+    ],
+    [
+      `Legacy program: ${live.verification?.legacy_path ?? "not chosen yet"}`,
+      `${live.rules.length} business rules to preserve`,
+      `Target: ${live.run?.targetLanguage || "not chosen yet"}`,
+    ],
+    [
+      `${failing} failing debug case(s)`,
+      `Code version: attempt ${live.latestCode?.attempt ?? "—"}`,
+      `Protected baseline: ${live.verification?.legacy_path ?? "legacy source"}`,
+    ],
+    [
+      `${live.tests.length} test cases (${live.tests.filter((t) => t.split === "holdout").length} holdout)`,
+      `Legacy image: ${live.verification?.legacy_image ?? "—"}`,
+      `Modern image: ${live.verification?.target_image ?? "—"}`,
+    ],
+    [`Run ${live.run?.id ?? "—"}`, `Zip sha256 ${live.run?.legacySha256.slice(0, 12) ?? "—"}`, "Source mounted read-only"],
+  ][selected] ?? [];
+  const badgeClass =
+    stage?.status === "Running" ? "ws-running" : stage?.status === "Failed" ? "ws-failed" : stage?.status === "Complete" ? "ws-complete" : "ws-waiting";
   return (
     <>
       <div className="aa-details">
@@ -90,14 +85,17 @@ export default function AgentActivity({
         >
           <img className="ws-trim" src="/design/activity/1a568.svg" alt="" />
           <h2 id="timeline-title">Execution timeline</h2>
-          <p>Observable actions, outputs and retries</p>
+          <p>
+            {live.timeline.length} live events · newest first · streamed from
+            SpacetimeDB
+          </p>
           <ol>
-            {activityEvents.map((event) => (
-              <li key={event.time}>
+            {live.timeline.slice(0, 60).map((event) => (
+              <li key={event.key}>
                 <button
                   className="aa-event"
-                  onClick={() => onSelect(event.selection)}
-                  aria-pressed={selected === event.selection}
+                  onClick={() => onSelect(event.stage)}
+                  aria-pressed={selected === event.stage}
                 >
                   <span className="aa-event-meta">
                     <time>{event.time}</time>
@@ -109,10 +107,10 @@ export default function AgentActivity({
                     </span>
                   </span>
                   <strong>{event.title}</strong>
-                  <span className="aa-event-detail">{event.detail}</span>
                 </button>
               </li>
             ))}
+            {!live.timeline.length && <li>No events yet.</li>}
           </ol>
         </section>
         <section
@@ -120,31 +118,36 @@ export default function AgentActivity({
           aria-labelledby="inspector-title"
         >
           <img className="ws-trim" src="/design/activity/61a53.svg" alt="" />
-          <span
-            className={`ws-badge aa-agent-badge ${selected === 2 ? "ws-running" : selected === 3 ? "ws-waiting" : "ws-complete"}`}
-          >
-            {inspector.label}
+          <span className={`ws-badge aa-agent-badge ${badgeClass}`}>
+            {agent.label}
           </span>
-          <h2 id="inspector-title">{inspector.title}</h2>
-          <h3 className="aa-task-label">Current task</h3>
-          <p className="aa-task">{inspector.task}</p>
+          <h2 id="inspector-title">{stage?.title ?? "System"}</h2>
+          <h3 className="aa-task-label">Task</h3>
+          <p className="aa-task">{agent.task}</p>
           <hr />
           <h3 className="aa-section-label">INPUTS</h3>
           <ul className="aa-inputs">
-            {inspector.inputs.map((input) => (
+            {inputs.map((input) => (
               <li key={input}>{input}</li>
             ))}
           </ul>
           <h3 className="aa-section-label">LATEST OUTPUT</h3>
-          <p className="aa-output">{inspector.output}</p>
-          <span className="ws-badge aa-attempt">{inspector.attempt}</span>
-          <p className="aa-next">{inspector.next}</p>
+          <p className="aa-output" title={latest?.title}>
+            {latest?.title ?? "No output from this agent yet."}
+          </p>
+          <span className="ws-badge aa-attempt">
+            {stage ? `${stage.status} · ${stage.detail}` : `${mine.length} events`}
+          </span>
+          <p className="aa-next">
+            {mine.length} event{mine.length === 1 ? "" : "s"} from this agent
+            {latest ? `, last at ${latest.time}` : ""}.
+          </p>
           <Button
             variant="neutral"
             size="small"
-            onPress={() => onInspect(inspector.view)}
+            onPress={() => onInspect(agent.view)}
           >
-            {inspector.action}
+            {agent.action}
           </Button>
         </section>
       </div>
@@ -152,10 +155,12 @@ export default function AgentActivity({
         className="aa-security ws-panel"
         aria-labelledby="security-title"
       >
-        <h2 id="security-title">Security &amp; red-team checks</h2>
+        <h2 id="security-title">Sandbox isolation</h2>
         <p>
-          1 medium finding requires review · Baseline write attempt blocked ·
-          Network access attempt blocked
+          Every legacy and generated program runs in Docker with no network, a
+          read-only file system, all capabilities dropped, memory and process
+          limits, and no environment variables (API keys never enter a
+          container).
         </p>
       </section>
     </>

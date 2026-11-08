@@ -160,7 +160,8 @@
   color: #ffa7ae;
 }
 .vi-history {
-  height: 162px;
+  /* grows with the number of debug attempts (live data) */
+  min-height: 162px;
   display: flex;
   flex-direction: column;
   gap: 10px;

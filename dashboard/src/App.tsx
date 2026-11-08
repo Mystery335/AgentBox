@@ -86,7 +86,7 @@ function App() {
               </h1>
               <p className="hero-description">
                 Understand, rewrite and validate legacy software with a team of
-                AI agents.
+                AI agents.{" "}
                 <br />
                 Review the code, the evidence and every unresolved issue in one
                 workspace.

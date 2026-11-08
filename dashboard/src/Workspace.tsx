@@ -1,178 +1,57 @@
 import NewModernization from "./NewModernization";
 import Documentation from "./Documentation";
-import { documentationData } from "./documentationData";
 import ValidationInvestigation from "./ValidationInvestigation";
-import { validationTests as tests } from "./validationData";
 import Badge from "./components/StatusBadge";
 import AgentActivity from "./AgentActivity";
-import { activityEvents } from "./activityData";
 import { useRef, useState } from "react";
 import Button from "./components/Button";
+import { runBadge, selectRun, statusLabel, useLiveRun, type LiveTest } from "./liveRun";
 import "./Workspace.css";
 
 const art = (name: string) => `/design/workspace/${name}.svg`;
 const icon = (name: string) => `/design/${name}.svg`;
-const stages = [
-  {
-    title: "Analyze & document",
-    status: "Complete",
-    detail: "8 files · 12 rules extracted",
-    icon: "98f06",
-    progress: "79a1f",
-  },
-  {
-    title: "Rewrite",
-    status: "Complete",
-    detail: "C → Java · 8 files generated",
-    icon: "819a9",
-    progress: "79a1f",
-  },
-  {
-    title: "Debug",
-    status: "Running",
-    detail: "Fixing registration boundary",
-    icon: "dd345",
-    progress: "2107b",
-  },
-  {
-    title: "Validate",
-    status: "Waiting",
-    detail: "23 / 24 completed tests match",
-    icon: "31f35",
-    progress: "d98c0",
-  },
-];
-const rules = [
-  {
-    id: "BR-01",
-    name: "Required fields",
-    description:
-      "Email is required. Both implementations must reject a missing email.",
-    before: [
-      "int valid_email(char *email) {",
-      "  if (email == NULL || *email == '\\0') {",
-      "    return 0;",
-      "  }",
-      "  return 1;",
-      "}",
-      "",
-      "// BR-01: email is required",
-    ],
-    after: [
-      "boolean validEmail(String email) {",
-      "  if (email == null || email.isEmpty()) {",
-      "    return false;",
-      "  }",
-      "  return true;",
-      "}",
-      "",
-      "// BR-01: email is required",
-    ],
-  },
-  {
-    id: "BR-02",
-    name: "Unique registration ID",
-    description:
-      "Registration IDs must be unique. Both implementations must reject a duplicate ID.",
-    before: [
-      "int register_id(int id) {",
-      "  if (exists(id)) {",
-      "    return 0;",
-      "  }",
-      "  return save(id);",
-      "}",
-      "",
-      "// BR-02: reject duplicate IDs",
-    ],
-    after: [
-      "boolean registerId(int id) {",
-      "  if (exists(id)) {",
-      "    return false;",
-      "  }",
-      "  return save(id);",
-      "}",
-      "",
-      "// BR-02: reject duplicate IDs",
-    ],
-  },
-  {
-    id: "BR-03",
-    name: "Input length limit",
-    description:
-      "Input length must remain within the original limit. The example repair now matches.",
-    before: [
-      "int valid_length(char *input) {",
-      "  if (strlen(input) <= 255) {",
-      "    return 1;",
-      "  }",
-      "  return 0;",
-      "}",
-      "",
-      "// BR-03: maximum length is 255",
-    ],
-    after: [
-      "boolean validLength(String input) {",
-      "  if (input.length() <= 255) {",
-      "    return true;",
-      "  }",
-      "  return false;",
-      "}",
-      "",
-      "// BR-03: length boundary fixed",
-    ],
-  },
-  {
-    id: "BR-04",
-    name: "Age eligibility boundary",
-    description:
-      "minimum registration age is 18. Both implementations must accept the boundary value.",
-    before: [
-      "int eligible(int age) {",
-      "  if (age >= 18) {",
-      "    return 1;",
-      "  }",
-      "  return 0;",
-      "}",
-      "",
-      "// BR-04: minimum age is 18",
-    ],
-    after: [
-      "boolean eligible(int age) {",
-      "  if (age > 18) {",
-      "    return true;",
-      "  }",
-      "  return false;",
-      "}",
-      "",
-      "// Boundary mismatch detected",
-    ],
-  },
-];
-function CodePane({ modern, lines }: { modern?: boolean; lines: string[] }) {
+const STAGE_ICONS = ["98f06", "819a9", "dd345", "31f35"];
+const progressArt = (status: string) =>
+  status === "Complete" || status === "Not needed" ? "79a1f" : status === "Running" ? "2107b" : "d98c0";
+const progressValue = (status: string) =>
+  status === "Complete" || status === "Not needed" ? 100 : status === "Running" ? 60 : status === "Failed" ? 100 : 0;
+
+function CodePane({
+  modern,
+  heading,
+  start,
+  lines,
+  empty,
+}: {
+  modern?: boolean;
+  heading: string;
+  start: number;
+  lines: string[];
+  empty: string;
+}) {
   return (
     <section
       className="ws-code-pane"
-      aria-label={modern ? "Generated Java code" : "Original C code"}
+      aria-label={modern ? "Generated code" : "Original code"}
     >
-      <h3>
-        {modern
-          ? "AFTER · GENERATED JAVA  /  Registration.java"
-          : "BEFORE · ORIGINAL C  /  registration.c"}
-      </h3>
+      <h3>{heading}</h3>
       <pre>
-        {lines.map((line, i) => (
-          <span key={i} className={i === 1 ? "ws-highlight" : ""}>
-            <span className="ws-line-number">
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            {line}
-            {"\n"}
-          </span>
-        ))}
+        {lines.length
+          ? lines.map((line, i) => (
+              <span key={i}>
+                <span className="ws-line-number">
+                  {String(start + i).padStart(2, "0")}
+                </span>
+                {line}
+                {"\n"}
+              </span>
+            ))
+          : empty}
       </pre>
     </section>
   );
 }
+
 export default function Workspace({
   onNew,
   activity = false,
@@ -186,23 +65,41 @@ export default function Workspace({
   documentation?: boolean;
   newModernization?: boolean;
 }) {
-  const [activityAgent, setActivityAgent] = useState(2);
+  const live = useLiveRun();
+  const [activityAgent, setActivityAgent] = useState(0);
   const [tab, setTab] = useState("Code & rules");
-  const [selected, setSelected] = useState("BR-04");
+  const [selectedKey, setSelected] = useState("");
   const [filter, setFilter] = useState("All");
   const [agent, setAgent] = useState<number | null>(null);
-  const [evidence, setEvidence] = useState<(typeof tests)[number] | null>(null);
+  const [evidence, setEvidence] = useState<LiveTest | null>(null);
   const details = useRef<HTMLDialogElement>(null);
-  const rule = rules.find((r) => r.id === selected)!;
+
+  // Validation and Documentation have their own routes; on the plain
+  // #/workspace route (e.g. after the browser's Back button) show Code & rules.
+  const view =
+    !investigation && !documentation && (tab === "Validation" || tab === "Documentation")
+      ? "Code & rules"
+      : tab;
+
+  const run = live.run;
+  const rules = live.rules;
+  const rule = rules.find((r) => r.key === selectedKey) ?? rules[0];
+  const tests = live.tests;
+  const legacyLang = run?.legacyLanguage ?? "legacy";
+  const target = run?.targetLanguage || "target";
+  const legacyFile = live.verification?.legacy_path ?? "original source";
+  const modernFile = live.verification?.modern_file ?? "generated code";
+  const runLabel = run ? run.id : "no run";
+
   const showAgent = (index: number) => {
     setAgent(index);
     setEvidence(null);
     details.current?.showModal();
   };
-  const showEvidence = (test: (typeof tests)[number]) => {
+  const showEvidence = (test: LiveTest) => {
     setEvidence(test);
     setAgent(null);
-    setSelected(test.rule);
+    if (test.ruleKey) setSelected(test.ruleKey);
     details.current?.showModal();
   };
   const exportReport = () => {
@@ -210,23 +107,32 @@ export default function Workspace({
       [
         JSON.stringify(
           {
-            project: "Registration service",
-            run: "0042",
-            source: "C",
-            target: "Java 21",
-            exampleData: true,
-            status: "Needs review",
-            summary: {
-              matchingTests: 23,
-              totalTests: 24,
-              untestedRules: 2,
-              security: "1 medium",
-            },
-            agents: stages,
-            visibleEvidence: tests,
-            ...(activity ? { timeline: activityEvents } : {}),
-            ...(investigation ? { investigation: tests } : {}),
-            ...(documentation ? { documentation: documentationData } : {}),
+            project: run?.legacyName,
+            run: run?.id,
+            source: run?.legacyLanguage,
+            target: run?.targetLanguage,
+            status: run?.status,
+            summary: live.metrics,
+            verification: live.verification
+              ? { ...live.verification, legacy_source: undefined }
+              : undefined,
+            agents: live.stages,
+            rules: rules.map((r) => ({ id: r.id, title: r.name, status: r.status, tests: r.tests })),
+            tests: tests.map((t) => ({
+              id: t.label,
+              name: t.name,
+              rule: t.rule,
+              split: t.split,
+              result: t.result,
+              history: t.history,
+            })),
+            debugAttempts: live.debugs.map((d) => ({
+              attempt: d.attempt,
+              diagnosis: d.diagnosis,
+              fix: d.fixSummary,
+              outcome: d.outcome,
+            })),
+            timeline: live.timeline.map((e) => ({ time: e.time, agent: e.agent, message: e.title })),
           },
           null,
           2,
@@ -237,7 +143,7 @@ export default function Workspace({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "agentbox-run-0042-report.json";
+    link.download = `agentbox-${run?.id ?? "run"}-report.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -251,6 +157,14 @@ export default function Workspace({
           : "/workspace";
     document.getElementById("ws-content")?.scrollIntoView({ block: "start" });
   };
+  const counts = {
+    All: tests.length,
+    Failed: tests.filter((t) => t.result === "Failed").length,
+    Passed: tests.filter((t) => t.result === "Passed").length,
+    Fixed: tests.filter((t) => t.result === "Fixed").length,
+  };
+  const latestFor = (stage: number) => live.timeline.find((e) => e.stage === stage);
+
   return (
     <div className="workspace-viewport">
       <div
@@ -268,8 +182,8 @@ export default function Workspace({
                 (!activity &&
                   !investigation &&
                   !documentation &&
-                  tab !== "Validation" &&
-                  tab !== "Documentation")
+                  view !== "Validation" &&
+                  view !== "Documentation")
                   ? "active"
                   : ""
               }
@@ -305,7 +219,20 @@ export default function Workspace({
             <p className="ws-isolated">● &nbsp;Sandbox isolated</p>
             <p>NVIDIA Nemotron / NIM</p>
             <hr />
-            <p>HM &nbsp; Hailey’s workspace</p>
+            <label className="ws-run-picker">
+              <span>RUN</span>
+              <select
+                value={run?.id ?? ""}
+                onChange={(e) => selectRun(e.target.value)}
+                aria-label="Select a modernization run"
+              >
+                {live.runs.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.legacyName} · {statusLabel(r.status)} · {r.id}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </aside>
         <div className="ws-main">
@@ -314,19 +241,31 @@ export default function Workspace({
           </div>
           <header className="ws-breadcrumb">
             <p>
-              Workspace &nbsp;/ &nbsp;Registration service &nbsp;/ &nbsp;Run
-              0042
+              Workspace &nbsp;/ &nbsp;{run?.legacyName ?? "No runs"} &nbsp;/ &nbsp;
+              {runLabel}
             </p>
-            <span className="ws-isolated">● &nbsp;ISOLATED WORKSPACE</span>
+            <span className="ws-isolated">● &nbsp;LIVE · SPACETIMEDB</span>
           </header>
           <main className="ws-content" id="ws-content">
             {newModernization ? (
               <NewModernization />
+            ) : !run ? (
+              <div className="ws-heading">
+                <div className="ws-project">
+                  <p>MODERNIZATION</p>
+                  <h1>{live.ready ? "No runs yet" : "Connecting…"}</h1>
+                  <p>
+                    {live.ready
+                      ? "Start one from the worker: npm run modernize -- path/to/legacy.zip. It appears here live."
+                      : "Connecting to SpacetimeDB on Maincloud."}
+                  </p>
+                </div>
+              </div>
             ) : (
               <>
                 <div className="ws-heading">
                   <div className="ws-project">
-                    <p>MODERNIZATION / RUN 0042</p>
+                    <p>MODERNIZATION / {runLabel.toUpperCase()}</p>
                     <h1>
                       {activity
                         ? "Agent activity"
@@ -334,19 +273,13 @@ export default function Workspace({
                           ? "System documentation"
                           : investigation
                             ? "Validation"
-                            : "Registration service"}
+                            : run.legacyName}
                     </h1>
                     <p>
-                      {activity
-                        ? "Run 0042   ·   Four specialized agents   ·   Example live state"
-                        : documentation
-                          ? "Registration service   ·   Generated from original source   ·   Review required"
-                          : investigation
-                            ? "Run 0042   ·   Same inputs, compared behavior   ·   Example run data"
-                            : "C → Java 21   ·   Run 0042   ·   Example run data"}
+                      {legacyLang} → {target} &nbsp; · &nbsp; {statusLabel(run.status)}
                     </p>
                   </div>
-                  <Badge text={activity ? "Debugging" : "Needs review"} />
+                  <Badge text={runBadge(run.status)} />
                   <Button variant="neutral" size="small" onPress={exportReport}>
                     Export report
                   </Button>
@@ -358,7 +291,7 @@ export default function Workspace({
                 </div>
                 {!investigation && !documentation && (
                   <div className="ws-stages">
-                    {stages.map((stage, i) => (
+                    {live.stages.map((stage, i) => (
                       <button
                         className="ws-stage"
                         key={stage.title}
@@ -378,18 +311,18 @@ export default function Workspace({
                           className="ws-progress"
                           role="progressbar"
                           aria-label={`${stage.title} progress`}
-                          aria-valuenow={[100, 100, 64, 96][i]}
+                          aria-valuenow={progressValue(stage.status)}
                           aria-valuemin={0}
                           aria-valuemax={100}
                         >
-                          <img src={art(stage.progress)} alt="" />
+                          <img src={art(progressArt(stage.status))} alt="" />
                         </div>
                         <img
                           className="ws-stage-icon"
-                          src={icon(stage.icon)}
+                          src={icon(STAGE_ICONS[i])}
                           alt=""
                         />
-                        {i === 2 && (
+                        {stage.status === "Running" && (
                           <img
                             className="ws-running-icon"
                             src={icon("14845")}
@@ -402,37 +335,37 @@ export default function Workspace({
                 )}
                 {documentation ? (
                   <Documentation
+                    live={live}
                     onNavigate={navigate}
-                    onInspect={(ruleId) => {
-                      setSelected(ruleId);
+                    onInspect={(ruleKey) => {
+                      setSelected(ruleKey);
                       navigate("Code & rules");
                     }}
                   />
                 ) : investigation ? (
                   <ValidationInvestigation
+                    live={live}
                     onNavigate={navigate}
-                    onInspect={(ruleId) => {
-                      setSelected(ruleId);
+                    onInspect={(ruleKey) => {
+                      setSelected(ruleKey);
                       navigate("Code & rules");
                     }}
                   />
                 ) : activity ? (
                   <AgentActivity
+                    live={live}
                     selected={activityAgent}
                     onSelect={setActivityAgent}
-                    onInspect={(view) => {
-                      setSelected("BR-04");
-                      navigate(view);
-                    }}
+                    onInspect={(view) => navigate(view)}
                   />
                 ) : (
                   <>
                     <div className="ws-metrics">
                       {[
-                        ["23 / 24", "Tests match"],
-                        ["1", "Behavior mismatch"],
-                        ["2", "Rules untested"],
-                        ["1 medium", "Security finding"],
+                        [live.metrics.matching, "Tests match legacy"],
+                        [String(live.metrics.mismatches), "Behavior mismatches"],
+                        [String(live.metrics.untested), "Rules untested"],
+                        [String(live.metrics.debugAttempts), "Debug attempts"],
                       ].map(([value, label]) => (
                         <div key={label}>
                           <strong>{value}</strong>
@@ -455,7 +388,7 @@ export default function Workspace({
                           key={name}
                           id={`tab-${name.replaceAll(" ", "-")}`}
                           role="tab"
-                          aria-selected={tab === name}
+                          aria-selected={view === name}
                           aria-controls="ws-tab-panel"
                           onClick={() => navigate(name)}
                         >
@@ -466,50 +399,80 @@ export default function Workspace({
                     <div
                       id="ws-tab-panel"
                       role="tabpanel"
-                      aria-labelledby={`tab-${tab.replaceAll(" ", "-")}`}
+                      aria-labelledby={`tab-${view.replaceAll(" ", "-")}`}
                     >
-                      {(tab === "Code & rules" || tab === "Overview") && (
+                      {(view === "Code & rules" || view === "Overview") && (
                         <section className="ws-comparison ws-panel">
                           <img className="ws-trim" src={art("d96b1")} alt="" />
                           <div className="ws-panel-heading">
                             <h2>Before / after</h2>
                             <p>
-                              registration.c &nbsp;→ &nbsp; Registration.java
+                              {legacyFile} &nbsp;→ &nbsp; {modernFile}
                             </p>
-                            <Badge text={`Rule ${selected} selected`} />
+                            {rule && <Badge text={`Rule ${rule.id} selected`} />}
                           </div>
                           <div className="ws-comparison-grid">
                             <section className="ws-rules">
-                              <h3>BUSINESS RULES</h3>
+                              <h3>BUSINESS RULES ({rules.length})</h3>
                               {rules.map((item) => (
                                 <button
-                                  key={item.id}
+                                  key={item.key}
                                   className={
-                                    selected === item.id ? "selected" : ""
+                                    rule?.key === item.key ? "selected" : ""
                                   }
-                                  aria-pressed={selected === item.id}
-                                  onClick={() => setSelected(item.id)}
+                                  aria-pressed={rule?.key === item.key}
+                                  onClick={() => setSelected(item.key)}
                                 >
                                   <span>
                                     {item.id} &nbsp;{item.name}
                                   </span>
-                                  {item.id === "BR-04" && (
+                                  {item.failing > 0 ? (
                                     <small>
-                                      1 failed test · inspect evidence
+                                      {item.failing} failed test
+                                      {item.failing === 1 ? "" : "s"} · inspect
+                                      evidence
+                                    </small>
+                                  ) : (
+                                    <small>
+                                      {item.status} · {item.tests} test
+                                      {item.tests === 1 ? "" : "s"}
                                     </small>
                                   )}
                                 </button>
                               ))}
                             </section>
-                            <CodePane lines={rule.before} />
-                            <CodePane modern lines={rule.after} />
+                            <CodePane
+                              heading={`BEFORE · ORIGINAL ${legacyLang.toUpperCase()}  /  ${legacyFile}`}
+                              start={rule?.before.start ?? 1}
+                              lines={rule?.before.lines ?? []}
+                              empty={
+                                !live.verification
+                                  ? "Original source appears when the run reaches verification."
+                                  : !live.verification.legacy_source
+                                    ? "The original source was not recorded for this (older) run."
+                                    : "This rule has no legacy line range."
+                              }
+                            />
+                            <CodePane
+                              modern
+                              heading={`AFTER · GENERATED ${target.toUpperCase()}  /  ${modernFile}`}
+                              start={rule?.after.start ?? 1}
+                              lines={rule?.after.lines ?? []}
+                              empty={
+                                live.latestCode
+                                  ? "The Translator did not map this rule to modern lines."
+                                  : "Not translated yet."
+                              }
+                            />
                           </div>
                           <p className="ws-linked-rule">
-                            Linked rule: {rule.description}
+                            {rule
+                              ? `Linked rule ${rule.id} (${rule.status}): ${rule.description}`
+                              : "No business rules extracted yet."}
                           </p>
                         </section>
                       )}
-                      {tab !== "Documentation" && (
+                      {view !== "Documentation" && (
                         <section className="ws-validation ws-panel">
                           <img className="ws-trim" src={art("88f71")} alt="" />
                           <div className="ws-panel-heading">
@@ -518,21 +481,20 @@ export default function Workspace({
                               className="ws-filters"
                               aria-label="Filter validation evidence"
                             >
-                              {[
-                                ["All", "24"],
-                                ["Failed", "1"],
-                                ["Passed", "22"],
-                                ["Fixed", "1"],
-                              ].map(([name, count]) => (
-                                <button
-                                  key={name}
-                                  className={filter === name ? "selected" : ""}
-                                  aria-pressed={filter === name}
-                                  onClick={() => setFilter(name)}
-                                >
-                                  {name} {count}
-                                </button>
-                              ))}
+                              {(["All", "Failed", "Passed", "Fixed"] as const).map(
+                                (name) => (
+                                  <button
+                                    key={name}
+                                    className={
+                                      filter === name ? "selected" : ""
+                                    }
+                                    aria-pressed={filter === name}
+                                    onClick={() => setFilter(name)}
+                                  >
+                                    {name} {counts[name]}
+                                  </button>
+                                ),
+                              )}
                             </div>
                           </div>
                           <table>
@@ -540,7 +502,7 @@ export default function Workspace({
                               <tr>
                                 <th>TEST CASE</th>
                                 <th>RULE</th>
-                                <th>LEGACY → JAVA</th>
+                                <th>LEGACY → {target.toUpperCase()}</th>
                                 <th>RESULT</th>
                               </tr>
                             </thead>
@@ -551,12 +513,12 @@ export default function Workspace({
                                     filter === "All" || test.result === filter,
                                 )
                                 .map((test) => (
-                                  <tr key={test.name}>
+                                  <tr key={test.key}>
                                     <td>
                                       <button
                                         onClick={() => showEvidence(test)}
                                       >
-                                        {test.name}
+                                        {test.label} · {test.name}
                                       </button>
                                     </td>
                                     <td>{test.rule}</td>
@@ -568,47 +530,41 @@ export default function Workspace({
                                 ))}
                             </tbody>
                           </table>
-                          {filter !== "All" && (
+                          {!tests.length && (
                             <p className="ws-filter-note">
-                              Showing supplied example evidence. Summary counts
-                              cover the full example run.
+                              No test cases yet. The Verifier records them when
+                              it runs the legacy program.
                             </p>
                           )}
                         </section>
                       )}
-                      {tab === "Documentation" && (
+                      {view === "Documentation" && (
                         <section className="ws-documentation ws-panel">
-                          <h2>Registration service · Run documentation</h2>
-                          <p>
-                            Example migration from C to Java 21. The analysis
-                            agent extracted 12 business rules across 8 source
-                            files.
-                          </p>
+                          <h2>{run.legacyName} · Run documentation</h2>
+                          <p>{live.doc.overview}</p>
                           <h3>Rules available for review</h3>
                           {rules.map((item) => (
                             <button
-                              key={item.id}
+                              key={item.key}
                               onClick={() => {
-                                setSelected(item.id);
+                                setSelected(item.key);
                                 setTab("Code & rules");
                               }}
                             >
                               {item.id} · {item.name} →
                             </button>
                           ))}
-                          <h3>Review before release</h3>
+                          <h3>Verification</h3>
                           <p>
-                            The minimum-age boundary differs at age 18. Two
-                            rules remain untested and one medium security
-                            finding needs review. Source files remain read-only
-                            in the isolated workspace.
+                            {live.verification?.reason ||
+                              statusLabel(run.status)}
                           </p>
                         </section>
                       )}
                     </div>
                     <p className="ws-disclaimer">
-                      Example evidence only · A passing test suite does not
-                      establish equivalence for every possible input.
+                      Live run data · A passing test suite does not establish
+                      equivalence for every possible input.
                     </p>
                   </>
                 )}
@@ -618,7 +574,7 @@ export default function Workspace({
           <footer className="ws-footer">
             <p>AgentBox</p>
             <p>AI-powered legacy modernization</p>
-            <p>NVIDIA Nemotron / NIM</p>
+            <p>NVIDIA Nemotron / NIM · SpacetimeDB</p>
           </footer>
         </div>
         <dialog
@@ -636,18 +592,34 @@ export default function Workspace({
           >
             ×
           </button>
-          <p className="eyebrow">RUN 0042 / EXAMPLE EVIDENCE</p>
+          <p className="eyebrow">{runLabel.toUpperCase()} / LIVE EVIDENCE</p>
           {evidence ? (
             <>
-              <h2>{evidence.name}</h2>
+              <h2>
+                {evidence.label} · {evidence.name}
+              </h2>
               <Badge text={evidence.result} />
               <dl>
                 <dt>Business rule</dt>
                 <dd>{evidence.rule}</dd>
-                <dt>Legacy → Java</dt>
+                <dt>Set</dt>
+                <dd>
+                  {evidence.split}
+                  {evidence.split === "holdout" ? " (never shown to the Debugger)" : ""}
+                </dd>
+                <dt>Legacy → {target}</dt>
                 <dd>{evidence.output}</dd>
               </dl>
-              <p>{rules.find((r) => r.id === evidence.rule)?.description}</p>
+              <p>Input</p>
+              <pre className="ws-evidence-pre">{evidence.input}</pre>
+              <p>Legacy output</p>
+              <pre className="ws-evidence-pre">{evidence.legacyOutput}</pre>
+              {evidence.result === "Failed" && (
+                <>
+                  <p>{target} output</p>
+                  <pre className="ws-evidence-pre">{evidence.modernOutput}</pre>
+                </>
+              )}
               <Button
                 onPress={() => {
                   setTab("Code & rules");
@@ -661,23 +633,19 @@ export default function Workspace({
             agent !== null && (
               <>
                 <h2>
-                  0{agent + 1} · {stages[agent].title}
+                  0{agent + 1} · {live.stages[agent].title}
                 </h2>
-                <Badge text={stages[agent].status} />
-                <p>{stages[agent].detail}</p>
-                <p>
-                  {agent === 2
-                    ? "The Java implementation excludes age 18. Compare the linked BR-04 boundary condition and inspect the failed test before accepting a repair."
-                    : "This is a snapshot of the example run shown in the design."}
-                </p>
+                <Badge text={live.stages[agent].status} />
+                <p>{live.stages[agent].detail}</p>
+                <p>{latestFor(agent)?.title ?? "No activity from this agent yet."}</p>
                 <Button
                   onPress={() => {
-                    setSelected("BR-04");
-                    setTab("Code & rules");
                     details.current?.close();
+                    window.location.hash = "/workspace/activity";
+                    setActivityAgent(agent);
                   }}
                 >
-                  Review code & rules →
+                  Open agent activity →
                 </Button>
               </>
             )
