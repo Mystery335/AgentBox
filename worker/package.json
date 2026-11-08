@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "dockerize": "tsx src/cli.ts dockerize",
     "run-legacy": "tsx src/cli.ts run",
+    "analyze": "tsx src/cli.ts analyze",
     "test": "tsx --test test/*.test.ts",
     "identity": "tsx src/smoke.ts identity",
     "smoke": "tsx src/smoke.ts",

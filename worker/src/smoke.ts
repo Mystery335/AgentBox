@@ -1,7 +1,7 @@
 // Backend smoke test: proves the published module really stores data.
 //
 //   npm run identity   -> prints a worker identity + token (put the token in .env)
-//   npm run smoke      -> calls all 14 reducers with a fresh run id, reads every
+//   npm run smoke      -> calls all 16 reducers with a fresh run id, reads every
 //                         table back with SQL, and checks the rows.
 //
 // It writes real rows (run ids start with "smoke-"). There are no delete
@@ -57,8 +57,11 @@ async function smoke(): Promise<number> {
   await db.addChange(`${id}:chg-1`, id, 0, 'translator', '', 'Initial', 'first pass', '+print("hi")');
   await db.addDebugAttempt(`${id}:dbg-1`, id, 1, '1 failing', 'case', 'fix', 2, 2, 'fixed');
   await db.logEvent(`${id}:evt-1`, id, 'analyzer', 'smoke event');
+  await db.setTargetLanguage(id, 'Java 21');
+  await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: false });
+  await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: true }); // same key: replaces
   await db.finishRun(id, 'ready_for_cutover');
-  check('all 14 reducers accepted (writer token works)', true);
+  check('all 16 reducers accepted (writer token works)', true);
 
   // Validation must reject bad input ---------------------------------------
   await expectReject('rejects an unknown status', () => db.setRunStatus(id, 'bogus'));
@@ -100,6 +103,9 @@ async function smoke(): Promise<number> {
   check('passing result drops modern_output', passed?.modern_output === '');
   check('change stored', (await count('change', `run_id = '${id}'`)) === 1);
   check('debug_attempt stored', (await count('debug_attempt', `run_id = '${id}'`)) === 1);
+  check('run.target_language set', run?.target_language === 'Java 21', `target=${run?.target_language}`);
+  const an = await db.sql(`SELECT * FROM analysis WHERE run_id = '${id}'`);
+  check('analysis row stored and replaced on same key', an.length === 1 && JSON.parse(String(an[0].json)).verifiable === true, `rows=${an.length}`);
   check('agent_event stored (incl. late event)', (await count('agent_event', `run_id = '${id}'`)) === 2);
 
   try {

@@ -1,5 +1,6 @@
 // AgentProof SpacetimeDB module (database "legacy-data" on Maincloud).
-// Data contract: .claude/shared-context-v2.md §6 (9 tables, 14 reducers).
+// Data contract: 10 public tables (incl. `analysis`) + private `writer`,
+// 16 reducers, 2 procedures (nemotron_ping, nemotron_chat).
 //
 // Field choice for the §7.12 conflict: the team's original plan fields, with the
 // v2 additions on top (split, kind, rule_id, disposition, legacy_sha256,
@@ -180,6 +181,25 @@ const agent_event = table(
   }
 );
 
+// Analyzer output, one row per artifact. `kind` says what `json` holds:
+//   system     - overview, recommended target language + reasons, first slice
+//   inventory  - every file with its kind and language
+//   component  - one source program/module: facts, compile result,
+//                verifiable/deferred + reasons, summary, rule ids, layouts
+//   runtime    - how the legacy image was built (Dockerfile, toolchain)
+// `key` is "" for system/inventory/runtime and the file path for component.
+const analysis = table(
+  { name: 'analysis', public: true },
+  {
+    id: t.string().primaryKey(), // `${run_id}:${kind}:${key}`
+    run_id: t.string().index('btree'),
+    kind: t.string(),
+    key: t.string(),
+    json: t.string(),
+    created_at: t.timestamp(),
+  }
+);
+
 // Private: only reducers can read it.
 const writer = table(
   { name: 'writer' },
@@ -199,6 +219,7 @@ const spacetimedb = schema(
   change,
   debug_attempt,
   agent_event,
+  analysis,
   writer,
   },
   {
@@ -475,6 +496,38 @@ export const add_debug_attempt = spacetimedb.reducer(
     }
     const { debug_attempt_id, ...rest } = a;
     ctx.db.debug_attempt.insert({ id: debug_attempt_id, ...rest, created_at: ctx.timestamp });
+  }
+);
+
+// 15: Analyzer output. Re-sending the same kind+key replaces the row, so a
+// re-run of one analysis step doesn't fail.
+const ANALYSIS_KINDS = ['system', 'inventory', 'component', 'runtime'] as const;
+export const add_analysis = spacetimedb.reducer(
+  { run_id: t.string(), kind: t.string(), key: t.string(), json: t.string() },
+  (ctx, { run_id, kind, key, json }) => {
+    requireWriter(ctx);
+    openRun(ctx, run_id);
+    oneOf('kind', kind, ANALYSIS_KINDS);
+    try {
+      JSON.parse(json);
+    } catch {
+      throw new SenderError('json must be valid JSON');
+    }
+    const id = `${run_id}:${kind}:${key}`;
+    const row = { id, run_id, kind, key, json, created_at: ctx.timestamp };
+    if (ctx.db.analysis.id.find(id)) ctx.db.analysis.id.update(row);
+    else ctx.db.analysis.insert(row);
+  }
+);
+
+// 16: the Analyzer decides the target language after start_run.
+export const set_target_language = spacetimedb.reducer(
+  { run_id: t.string(), target_language: t.string() },
+  (ctx, { run_id, target_language }) => {
+    requireWriter(ctx);
+    nonEmpty('target_language', target_language);
+    const r = openRun(ctx, run_id);
+    ctx.db.run.id.update({ ...r, target_language });
   }
 );
 

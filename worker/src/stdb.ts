@@ -136,6 +136,9 @@ export class Stdb {
   logEvent = (eventId: string, runId: string, agent: string, message: string) =>
     this.call('log_event', eventId, runId, agent, message);
   finishRun = (runId: string, status: string) => this.call('finish_run', runId, status);
+  addAnalysis = (runId: string, kind: 'system' | 'inventory' | 'component' | 'runtime', key: string, json: unknown) =>
+    this.call('add_analysis', runId, kind, key, JSON.stringify(json));
+  setTargetLanguage = (runId: string, targetLanguage: string) => this.call('set_target_language', runId, targetLanguage);
 }
 
 function columnName(name: unknown): string | undefined {
