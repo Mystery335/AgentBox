@@ -24,6 +24,7 @@ import { TimeDuration, ScheduleAt } from 'spacetimedb';
 // ---------------------------------------------------------------- enums
 const RUN_STATUSES = [
   'analyzing',
+  'analyzed', // Analyzer done; waiting for the Translator (watchdog ignores it)
   'translating',
   'verifying',
   'debugging',
@@ -35,7 +36,8 @@ const FINAL_RUN_STATUSES = ['ready_for_cutover', 'failed'] as const;
 // Run state machine: the only status moves set_run_status / finish_run allow.
 // Staying in the same status is always allowed (idempotent retries).
 const NEXT_STATUS: Record<string, readonly string[]> = {
-  analyzing: ['translating', 'failed'],
+  analyzing: ['analyzed', 'translating', 'failed'],
+  analyzed: ['translating', 'failed'],
   translating: ['verifying', 'failed'],
   verifying: ['debugging', 'shadow', 'failed'],
   debugging: ['verifying', 'shadow', 'failed'],
@@ -46,6 +48,8 @@ const NEXT_STATUS: Record<string, readonly string[]> = {
 // Watchdog: a run with no writer activity for this long is marked failed.
 // Longer than one Nemotron call (170 s) plus a Docker build, with headroom.
 const STALL_MICROS = 15n * 60n * 1_000_000n;
+// Statuses where the run is waiting on purpose, so no activity is expected.
+const WAITING_STATUSES: readonly string[] = ['analyzed'];
 const WATCHDOG_EVERY_MICROS = 60n * 1_000_000n;
 const RULE_STATUSES = ['pending', 'verified', 'fixed', 'unresolved', 'approved'] as const;
 const DISPOSITIONS = ['keep', 'review', 'drop_candidate'] as const;
@@ -361,7 +365,7 @@ export const watchdog = spacetimedb.reducer(
     if (!ctx.sender.isEqual(ctx.databaseIdentity)) throw new SenderError('watchdog is internal');
     const now = ctx.timestamp.microsSinceUnixEpoch;
     for (const r of ctx.db.run.iter()) {
-      if (r.finished_at !== undefined) continue;
+      if (r.finished_at !== undefined || WAITING_STATUSES.includes(r.status)) continue;
       const hb = ctx.db.run_heartbeat.run_id.find(r.id);
       const last = (hb ? hb.last_seen : r.started_at).microsSinceUnixEpoch;
       if (now - last < STALL_MICROS) continue;
@@ -694,7 +698,7 @@ export const finish_run = spacetimedb.reducer(
 // One row per run with the numbers the dashboard header needs, computed on
 // the server and pushed to subscribers whenever an underlying row changes.
 // "Latest attempt" is the highest attempt with test results.
-const RunSummary = t.row('RunSummary', {
+const RunSummary = t.row('RunSummaryRow', {
   run_id: t.string().primaryKey(),
   status: t.string(),
   target_language: t.string(),

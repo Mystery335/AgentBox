@@ -107,7 +107,7 @@ async function smoke(): Promise<number> {
   check('program row stored (with language)', prog?.language === 'cobol');
   check('code_version stored', (await count('code_version', `run_id = '${id}'`)) === 1);
   const rule = await one(`SELECT * FROM rule WHERE run_id = '${id}'`);
-  check('rule stored, status updated', rule?.status === 'verified' && rule?.when_ === 'it is rounded',
+  check('rule stored, status updated', rule?.status === 'approved' && rule?.when_ === 'it is rounded',
     `status=${rule?.status}`);
   check('test_case rows stored', (await count('test_case', `run_id = '${id}'`)) === 2);
   const tc2 = await one(`SELECT * FROM test_case WHERE id = '${id}:tc-2'`);
