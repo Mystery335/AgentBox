@@ -1,0 +1,54 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="1228.7" height="1195.4" viewBox="0 0 1228.7 1195.4" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Group">
+<path id="Vector" d="M0 129.7H10L19 138.7V354.7L8 365.7V584.7L18 594.7V824.7L6 836.7V1124.7M1228 114.7H1216L1207 123.7V344.7L1221 358.7V604.7L1210 615.7V854.7L1224 868.7V1126.7M0 145.7H4L11 152.7V345.7L1 355.7V574.7M1228 134.7H1224L1215 143.7V334.7L1227 346.7V584.7" stroke-width="1.4" stroke="url(#paint0_linear_0_142)"/>
+<path id="Vector_2" d="M10 1124.7C10 1126.91 8.20914 1128.7 6 1128.7C3.79086 1128.7 2 1126.91 2 1124.7C2 1122.49 3.79086 1120.7 6 1120.7C8.20914 1120.7 10 1122.49 10 1124.7Z" stroke-width="1.4" stroke="url(#paint1_linear_0_142)"/>
+<path id="Vector_3" d="M1228 1126.7C1228 1128.91 1226.21 1130.7 1224 1130.7C1221.79 1130.7 1220 1128.91 1220 1126.7C1220 1124.49 1221.79 1122.7 1224 1122.7C1226.21 1122.7 1228 1124.49 1228 1126.7Z" stroke-width="1.4" stroke="url(#paint2_linear_0_142)"/>
+<path id="Vector_4" d="M31 1179.7H176L206 1149.7H331M31 1194.7H186L216 1164.7H296M1186 1179.7H1056L1026 1149.7H916M1186 1194.7H1046L1016 1164.7H951" stroke-width="1.4" stroke="url(#paint3_linear_0_142)"/>
+<path id="Vector_5" d="M336 1149.7C336 1152.46 333.761 1154.7 331 1154.7C328.239 1154.7 326 1152.46 326 1149.7C326 1146.94 328.239 1144.7 331 1144.7C333.761 1144.7 336 1146.94 336 1149.7Z" stroke-width="1.4" stroke="url(#paint4_linear_0_142)"/>
+<path id="Vector_6" d="M921 1149.7C921 1152.46 918.761 1154.7 916 1154.7C913.239 1154.7 911 1152.46 911 1149.7C911 1146.94 913.239 1144.7 916 1144.7C918.761 1144.7 921 1146.94 921 1149.7Z" stroke-width="1.4" stroke="url(#paint5_linear_0_142)"/>
+<path id="Vector_7" d="M776 10.7H896L921 35.7H1006M786 0.7H906L931 25.7H1036" stroke-width="1.4" stroke="url(#paint6_linear_0_142)"/>
+<path id="Vector_8" d="M1009 35.7C1009 37.3569 1007.66 38.7 1006 38.7C1004.34 38.7 1003 37.3569 1003 35.7C1003 34.0431 1004.34 32.7 1006 32.7C1007.66 32.7 1009 34.0431 1009 35.7Z" stroke-width="1.4" stroke="url(#paint7_linear_0_142)"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_142" x1="0" y1="114.7" x2="1228" y2="114.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint1_linear_0_142" x1="2" y1="1120.7" x2="10" y2="1120.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint2_linear_0_142" x1="1220" y1="1122.7" x2="1228" y2="1122.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint3_linear_0_142" x1="31" y1="1149.7" x2="1186" y2="1149.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint4_linear_0_142" x1="326" y1="1144.7" x2="336" y2="1144.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint5_linear_0_142" x1="911" y1="1144.7" x2="921" y2="1144.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint6_linear_0_142" x1="776" y1="0.7" x2="1036" y2="0.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+<linearGradient id="paint7_linear_0_142" x1="1003" y1="32.7" x2="1009" y2="32.7" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF73D6"/>
+<stop offset="0.5" stop-color="#B39BFF"/>
+<stop offset="1" stop-color="#7BAEFF"/>
+</linearGradient>
+</defs>
+</svg>

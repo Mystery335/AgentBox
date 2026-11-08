@@ -1,0 +1,42 @@
+export const activityEvents = [
+  {
+    time: "10:24:18",
+    agent: "DEBUG",
+    status: "Running",
+    title: "Proposed fix for age eligibility boundary",
+    detail: "Registration.java · line 2",
+    selection: 2,
+  },
+  {
+    time: "10:24:12",
+    agent: "VALIDATE",
+    status: "Failed",
+    title: "Boundary input produced different outputs",
+    detail: "Test T-017 · age = 18",
+    selection: 3,
+  },
+  {
+    time: "10:23:42",
+    agent: "REWRITE",
+    status: "Complete",
+    title: "Generated Java implementation",
+    detail: "8 output files · 12 business rules mapped",
+    selection: 1,
+  },
+  {
+    time: "10:22:19",
+    agent: "ANALYZE",
+    status: "Complete",
+    title: "Documented registration business logic",
+    detail: "8 source files · documentation.md",
+    selection: 0,
+  },
+  {
+    time: "10:22:01",
+    agent: "SYSTEM",
+    status: "Complete",
+    title: "Created isolated run workspace",
+    detail: "Source mounted read-only",
+    selection: 4,
+  },
+];

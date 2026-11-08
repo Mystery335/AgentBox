@@ -1,0 +1,12 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="125" height="36" viewBox="0 0 125 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Cyberpunk / modernization arrow">
+<path id="Vector" d="M2 18H103M93 6L106 18L93 30M104 6L117 18L104 30" stroke-width="3" stroke="url(#paint0_linear_0_114)"/>
+<path id="Vector_2" opacity="0.6" d="M2 11H60M2 25H60" stroke="#977DFF"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_114" x1="2" y1="6" x2="117" y2="6" gradientUnits="userSpaceOnUse">
+<stop stop-color="#977DFF"/>
+<stop offset="1" stop-color="#FF54C9"/>
+</linearGradient>
+</defs>
+</svg>
