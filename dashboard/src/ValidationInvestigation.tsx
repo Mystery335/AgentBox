@@ -5,6 +5,8 @@ import type { LiveRun } from "./liveRun";
 import "./ValidationInvestigation.css";
 
 const FILTERS = ["All", "Failed", "Passed", "Fixed"] as const;
+const clip = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 
 export default function ValidationInvestigation({
   live,
@@ -184,7 +186,7 @@ export default function ValidationInvestigation({
               >
                 Attempt {h.attempt} · {h.passed ? "identical to legacy" : "differs from legacy"}
                 {h.attempt > 0 && live.debugs.find((d) => d.attempt === h.attempt)
-                  ? ` · after fix: ${live.debugs.find((d) => d.attempt === h.attempt)!.fixSummary.slice(0, 140)}`
+                  ? ` · after fix: ${clip(live.debugs.find((d) => d.attempt === h.attempt)!.fixSummary, 140)}`
                   : ""}
               </p>
             ))

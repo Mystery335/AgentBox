@@ -31,19 +31,29 @@
   font-size: 11px;
 }
 .aa-timeline ol {
-  padding: 0;
+  padding: 0 8px 0 0;
   margin: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* live runs have dozens of events: scroll inside the fixed-height panel */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: #977dff #223662;
+  scrollbar-width: thin;
+}
+.aa-details .aa-inspector {
+  overflow-y: auto;
 }
 .aa-event {
   display: flex;
   flex-direction: column;
   gap: 5px;
   width: 712px;
-  height: 88px;
+  min-height: 88px;
+  flex-shrink: 0;
   padding: 10px;
   background: transparent;
   border: 0;
@@ -135,7 +145,13 @@
 }
 .aa-output {
   width: 370px;
-  height: 20px;
+  /* agent messages can be long: up to 4 lines, full text in the tooltip */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  flex-shrink: 0;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.45;

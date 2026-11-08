@@ -132,7 +132,9 @@ export default function AgentActivity({
             ))}
           </ul>
           <h3 className="aa-section-label">LATEST OUTPUT</h3>
-          <p className="aa-output">{latest?.title ?? "No output from this agent yet."}</p>
+          <p className="aa-output" title={latest?.title}>
+            {latest?.title ?? "No output from this agent yet."}
+          </p>
           <span className="ws-badge aa-attempt">
             {stage ? `${stage.status} · ${stage.detail}` : `${mine.length} events`}
           </span>

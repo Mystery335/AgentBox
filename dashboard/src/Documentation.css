@@ -85,6 +85,11 @@
   font-weight: 600;
   line-height: 1.45;
 }
+/* The reader is a fixed-height flex column: keep children at full height
+   so long live text scrolls instead of being squashed under the next block. */
+.doc-reader-scroll > * {
+  flex-shrink: 0;
+}
 .doc-overview {
   font-size: 13px;
   line-height: 1.45;

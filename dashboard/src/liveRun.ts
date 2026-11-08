@@ -134,6 +134,15 @@ const parse = <T,>(json: string): T | undefined => {
 const micros = (t: { microsSinceUnixEpoch: bigint }) => Number(t.microsSinceUnixEpoch / 1000n);
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour12: false });
 const shortRule = (key: string) => key.split(":").pop() || key;
+/** Program part of a rule key ("<run>:<PROGRAM>:<rule>"). */
+const ruleProgram = (key: string) => {
+  const parts = key.split(":");
+  return parts.length >= 3 ? parts[parts.length - 2] : "";
+};
+/** "Attempt 5: debug 0/8, holdout 0/4 identical to legacy" is a failure, not a completed step. */
+const notAllIdentical = (message: string) =>
+  /identical/i.test(message) &&
+  [...message.matchAll(/(\d+)\/(\d+)/g)].some((m) => Number(m[1]) < Number(m[2]));
 const slice = (text: string | undefined, start: number, end: number) => {
   if (!text || !start) return [];
   return text.replace(/\r\n?/g, "\n").split("\n").slice(start - 1, Math.max(end, start));
@@ -230,13 +239,15 @@ export function useLiveRun() {
 
     // Rules: those of the modernized program when there is one, else all.
     const scoped = verification?.component ? rules.filter((r) => r.id.includes(`:${verification.component}:`)) : rules;
+    // Rule ids restart at BR-01 in every program: name the program when several are listed.
+    const manyPrograms = new Set(scoped.map((r) => ruleProgram(r.id))).size > 1;
     const liveRules: LiveRule[] = [...scoped]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((r) => {
         const mine = tests.filter((t) => t.ruleKey === r.id);
         return {
           key: r.id,
-          id: shortRule(r.id),
+          id: manyPrograms && ruleProgram(r.id) ? `${ruleProgram(r.id)} ${shortRule(r.id)}` : shortRule(r.id),
           name: r.title,
           description: `Given ${r.given}; when ${r.when}; then ${r.then}.`,
           status: r.status,
@@ -254,7 +265,7 @@ export function useLiveRun() {
       time: clock(micros(e.createdAt)),
       agent: AGENT_LABEL[e.agent] ?? "SYSTEM",
       stage: AGENT_STAGE[e.agent] ?? 4,
-      status: /\bfail|rejected|does not build|differ|timed out/i.test(e.message) ? "Failed" : i === 0 && !finished && status !== "analyzed" ? "Running" : "Complete",
+      status: /\bfail|rejected|does not build|differ|timed out/i.test(e.message) || notAllIdentical(e.message) ? "Failed" : i === 0 && !finished && status !== "analyzed" ? "Running" : "Complete",
       title: e.message,
     }));
 

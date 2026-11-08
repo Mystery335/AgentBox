@@ -74,6 +74,13 @@ export default function Workspace({
   const [evidence, setEvidence] = useState<LiveTest | null>(null);
   const details = useRef<HTMLDialogElement>(null);
 
+  // Validation and Documentation have their own routes; on the plain
+  // #/workspace route (e.g. after the browser's Back button) show Code & rules.
+  const view =
+    !investigation && !documentation && (tab === "Validation" || tab === "Documentation")
+      ? "Code & rules"
+      : tab;
+
   const run = live.run;
   const rules = live.rules;
   const rule = rules.find((r) => r.key === selectedKey) ?? rules[0];
@@ -175,8 +182,8 @@ export default function Workspace({
                 (!activity &&
                   !investigation &&
                   !documentation &&
-                  tab !== "Validation" &&
-                  tab !== "Documentation")
+                  view !== "Validation" &&
+                  view !== "Documentation")
                   ? "active"
                   : ""
               }
@@ -381,7 +388,7 @@ export default function Workspace({
                           key={name}
                           id={`tab-${name.replaceAll(" ", "-")}`}
                           role="tab"
-                          aria-selected={tab === name}
+                          aria-selected={view === name}
                           aria-controls="ws-tab-panel"
                           onClick={() => navigate(name)}
                         >
@@ -392,9 +399,9 @@ export default function Workspace({
                     <div
                       id="ws-tab-panel"
                       role="tabpanel"
-                      aria-labelledby={`tab-${tab.replaceAll(" ", "-")}`}
+                      aria-labelledby={`tab-${view.replaceAll(" ", "-")}`}
                     >
-                      {(tab === "Code & rules" || tab === "Overview") && (
+                      {(view === "Code & rules" || view === "Overview") && (
                         <section className="ws-comparison ws-panel">
                           <img className="ws-trim" src={art("d96b1")} alt="" />
                           <div className="ws-panel-heading">
@@ -465,7 +472,7 @@ export default function Workspace({
                           </p>
                         </section>
                       )}
-                      {tab !== "Documentation" && (
+                      {view !== "Documentation" && (
                         <section className="ws-validation ws-panel">
                           <img className="ws-trim" src={art("88f71")} alt="" />
                           <div className="ws-panel-heading">
@@ -531,7 +538,7 @@ export default function Workspace({
                           )}
                         </section>
                       )}
-                      {tab === "Documentation" && (
+                      {view === "Documentation" && (
                         <section className="ws-documentation ws-panel">
                           <h2>{run.legacyName} · Run documentation</h2>
                           <p>{live.doc.overview}</p>

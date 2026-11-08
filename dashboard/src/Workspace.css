@@ -635,4 +635,14 @@
 .ws-rules {
   max-height: 520px;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Fill the list minus its scrollbar, so long rule lists don't scroll sideways. */
+.ws-rules button {
+  width: 100%;
+}
+/* Live rules can have long given/when/then text: let the panel grow. */
+.ws-comparison {
+  height: auto;
+  min-height: 414px;
 }
