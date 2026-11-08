@@ -11,8 +11,7 @@ import path from 'node:path';
 import { runToolLoop, type ToolLoopResult } from '../llm.ts';
 import type { Stdb } from '../stdb.ts';
 import type { ComponentAnalysis } from '../analyzer/agent.ts';
-import { NORMALIZATION_POLICY } from './sandbox.ts';
-import type { TargetProfile } from './targets.ts';
+import { RUN_CONTRACT, type TargetProfile } from '../translator/targets.ts';
 
 // ------------------------------------------------------------- inputs
 /** A component row as the Analyzer stored it (analysis kind "component"). */
@@ -132,31 +131,27 @@ const stats = (r: ToolLoopResult): AgentStats => ({
   models: r.models,
 });
 
-function contract(target: TargetProfile): string {
-  return [
-    `Write ONE ${target.label} file named ${target.file}. It is run as: ${target.run}`,
-    'It must behave EXACTLY like the legacy program: read the same input from standard input, write the same output to standard output, and exit with the same exit code.',
-    NORMALIZATION_POLICY,
-    'So keep every space, column alignment, zero padding, sign and number format the legacy program prints.',
-    'COBOL edited pictures have a FIXED width: Z(4)9 is 5 characters, Z(6)9.99 is 10, Z(8)9.99 is 12. Z positions turn leading zeros into spaces, but 9 positions always print a digit, so zero prints as "    0" in Z(4)9 and "      0.00" in Z(6)9.99. DISPLAY of a PIC X(n) field prints all n characters (trailing spaces included). Alphanumeric literals print exactly as written.',
-    'The sandbox has no network and a read-only file system: do not open files or sockets, do not import third-party packages.',
-    'The file must compile on the first try: declare every helper you call, import what you use, and handle or declare checked exceptions.',
-    `Language notes: ${target.notes}`,
-  ].join('\n');
+/**
+ * What the Debugger is told about the code it fixes: the program file it may
+ * change, how it is run, and the shared records module it imports (read-only;
+ * fixes go in the program file).
+ */
+export interface ModernTarget {
+  profile: TargetProfile;
+  /** The program file, e.g. paycalc.py. */
+  file: string;
+  /** Shared records module, as shown to the model (relevant sections). */
+  shared: { fileName: string; text: string };
 }
 
-/** Real legacy behaviour on a few debug inputs (never holdout ones), shown to the Translator. */
-export interface Example {
-  input: string;
-  expected: string;
-}
-
-function examplesBlock(examples: Example[]): string {
-  if (!examples.length) return '';
+function contract(t: ModernTarget): string {
   return [
-    '## Real behaviour of the legacy program (recorded by running it)',
-    'Your program must produce exactly this output for these inputs. Strings are JSON-quoted so spaces are visible; "[exit N]" on the last line is the exit code.',
-    ...examples.map((e, i) => `### Example ${i + 1}\nstdin: ${JSON.stringify(e.input)}\nstdout lines:\n${e.expected.split('\n').map(l => `  ${JSON.stringify(l)}`).join('\n')}`),
+    `Fix ONE ${t.profile.label} file named ${t.file}. It is run as: ${t.profile.run(t.file)}`,
+    `It imports the shared module ${t.shared.fileName}, which is read-only for you: do not redefine its types, and do not paste it into ${t.file}.`,
+    RUN_CONTRACT,
+    'The sandbox has no network and a read-only file system: do not open sockets or import third-party packages.',
+    'The file must compile: declare every helper you call, import what you use, and handle or declare checked exceptions.',
+    `Language conventions:\n${t.profile.conventions}`,
   ].join('\n');
 }
 
@@ -175,88 +170,13 @@ export function lineDiff(expected: string, actual: string, max = 8): string {
   return out.join('\n') || '(outputs look the same line by line; check trailing output or the exit code)';
 }
 
-function validCode(code: unknown, target: TargetProfile): string | undefined {
+/** Basic shape checks per language. Exported for tests. */
+export function validCode(code: unknown, t: ModernTarget): string | undefined {
   if (typeof code !== 'string' || code.trim().length < 20) return 'code is missing or too short';
-  if (target.id === 'java' && !/\bclass\s+Main\b/.test(code)) return 'Java code must declare class Main';
-  if (target.id === 'go' && !/^\s*package\s+main\b/m.test(code)) return 'Go code must be package main';
+  const cls = t.file.replace(/\.[^.]+$/, '');
+  if (t.profile.id === 'java' && !new RegExp(String.raw`\bclass\s+${cls}\b`).test(code)) return `Java code must declare class ${cls}`;
+  if (t.profile.id === 'go' && !/^\s*package\s+main\b/m.test(code)) return 'Go code must be package main';
   return undefined;
-}
-
-// --------------------------------------------------------- translator
-export interface Translation {
-  code: string;
-  notes: string;
-  rule_map: { rule_id: string; start_line: number; end_line: number }[];
-  stats: AgentStats;
-}
-
-export async function translate(db: Stdb, ctx: LegacyContext, target: TargetProfile, examples: Example[], onReject?: (p: string) => void): Promise<Translation> {
-  const ruleIds = new Set(ctx.rules.map(r => r.id));
-  const r = await runToolLoop({
-    db,
-    system:
-      'You are the Translator agent of AgentProof, which modernizes legacy systems and then PROVES the new code behaves identically by running both on the same inputs. ' +
-      'Translate faithfully: same behaviour, including edge cases, error messages and rounding. Write clear, idiomatic, well-structured modern code with short comments that name the business rule each part implements. ' +
-      'Answer by calling submit_translation.',
-    user: [
-      legacyBlock(ctx),
-      '## Your task',
-      contract(target),
-      examplesBlock(examples),
-      'In rule_map, give for EVERY business rule listed above the line range in YOUR code that implements it (1-based, inclusive).',
-    ].join('\n\n'),
-    tools: [
-      {
-        name: 'submit_translation',
-        description: 'Submit the complete modern source file.',
-        parameters: {
-          type: 'object',
-          properties: {
-            code: { type: 'string', description: `Complete contents of ${target.file}` },
-            notes: { type: 'string', description: 'Short notes: design choices and anything that was hard to preserve.' },
-            rule_map: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: { rule_id: { type: 'string' }, start_line: { type: 'integer' }, end_line: { type: 'integer' } },
-                required: ['rule_id', 'start_line', 'end_line'],
-              },
-            },
-          },
-          required: ['code', 'notes', 'rule_map'],
-        },
-      },
-    ],
-    finalTool: 'submit_translation',
-    handle: async () => 'ERROR: only submit_translation is available',
-    normalize: a => ({ ...a, code: typeof a.code === 'string' ? stripFences(a.code) : a.code, rule_map: Array.isArray(a.rule_map) ? a.rule_map : [] }),
-    validate: a => {
-      const bad = validCode(a.code, target);
-      if (bad) return bad;
-      const lines = String(a.code).split('\n').length;
-      for (const m of a.rule_map as Record<string, unknown>[]) {
-        if (!ruleIds.has(String(m.rule_id))) return `rule_map has unknown rule_id "${m.rule_id}"; use only: ${[...ruleIds].join(', ')}`;
-        const s = Number(m.start_line);
-        const e = Number(m.end_line);
-        if (!(s >= 1 && e >= s && e <= lines)) return `rule_map line range ${s}-${e} for ${m.rule_id} is outside the code (1-${lines})`;
-      }
-      const mapped = new Set((a.rule_map as Record<string, unknown>[]).map(m => String(m.rule_id)));
-      const missing = [...ruleIds].filter(id => !mapped.has(id));
-      if (missing.length) return `rule_map is missing ${missing.length} rule(s): ${missing.join(', ')}. Map every rule`;
-      return undefined;
-    },
-    onReject,
-    maxTurns: 5,
-    maxTokens: 12000,
-    thinking: false,
-  });
-  const a = r.answer;
-  return {
-    code: String(a.code),
-    notes: String(a.notes ?? ''),
-    rule_map: (a.rule_map as Record<string, unknown>[]).map(m => ({ rule_id: String(m.rule_id), start_line: Number(m.start_line), end_line: Number(m.end_line) })),
-    stats: stats(r),
-  };
 }
 
 // --------------------------------------------------------- test writer
@@ -355,7 +275,7 @@ export interface Fix {
 export async function debugFix(
   db: Stdb,
   ctx: LegacyContext,
-  target: TargetProfile,
+  target: ModernTarget,
   o: { code: string; attempt: number; buildLog?: string; failures: Failure[]; history: string[] },
   onReject?: (p: string) => void
 ): Promise<Fix> {
@@ -379,6 +299,10 @@ export async function debugFix(
       legacyBlock(ctx),
       '## Contract',
       contract(target),
+      `## Shared module ${target.shared.fileName} (read-only; the parts this program uses)`,
+      '```',
+      target.shared.text,
+      '```',
       `## Current modern code (${target.file}, debug attempt ${o.attempt})`,
       '```',
       numbered(o.code),

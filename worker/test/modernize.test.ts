@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { canonical, parseBatch } from '../src/modernize/sandbox.ts';
 import { legacyBuildCommand, pickComponent, splitOf } from '../src/modernize/index.ts';
-import { pickTarget } from '../src/modernize/targets.ts';
+import { pickTarget } from '../src/translator/targets.ts';
 import { stripLineNumbers, type StoredComponent } from '../src/modernize/agents.ts';
 
 describe('parseBatch', () => {

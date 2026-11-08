@@ -152,6 +152,27 @@ export class Stdb {
     this.call('add_analysis', runId, kind, key, JSON.stringify(json));
   setRuleModernLines = (ruleId: string, start: number, end: number) => this.call('set_rule_modern_lines', ruleId, start, end);
   setTargetLanguage = (runId: string, targetLanguage: string) => this.call('set_target_language', runId, targetLanguage);
+  /**
+   * Stores one translation. If the published module predates the
+   * `translation` table, warns once and skips instead of stopping the run
+   * (the code still reaches code_version / change rows and the Verifier).
+   */
+  addTranslation = async (t: {
+    runId: string; component: string; name: string; attempt: number; language: string; fileName: string;
+    source: string; sha256: string; checkStatus: 'ok' | 'failed' | 'unavailable'; checkOutput: string;
+    ruleMap: { rule_id: string; function: string }[]; notes: string;
+  }): Promise<void> => {
+    if (this.#noTranslationTable) return;
+    try {
+      await this.call('add_translation', t.runId, t.component, t.name, t.attempt, t.language, t.fileName, t.source, t.sha256,
+        t.checkStatus, t.checkOutput, JSON.stringify(t.ruleMap), t.notes);
+    } catch (e) {
+      if (!(e instanceof StdbError && /no such (reducer|procedure)/i.test(e.message))) throw e;
+      this.#noTranslationTable = true;
+      console.warn('warning: the published module has no add_translation reducer; republish the module to store translations');
+    }
+  };
+  #noTranslationTable = false;
   /** Permanently deletes a run and all its rows (and its program if unused). */
   deleteRun = (runId: string) => this.call('delete_run', runId);
 }

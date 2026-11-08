@@ -7,6 +7,17 @@ import { dockerizeZip, DockerizeError } from './dockerize.ts';
 import { runLocked } from './docker.ts';
 import { analyzeZip } from './analyzer/index.ts';
 import { modernizeRun } from './modernize/index.ts';
+import { contextFromAnalysis, contextFromDb, translateRun, type TranslateRunResult } from './translator/index.ts';
+
+/** Prints a Translator summary; returns 1 if any program failed. */
+function printTranslation(t: TranslateRunResult): number {
+  console.log(`\ntranslation for run ${t.runId} -> ${t.targetLanguage}`);
+  if (t.shared) console.log(`  shared module: static check ${t.shared.check.status}`);
+  for (const p of t.programs) {
+    console.log(`  ${p.name.padEnd(10)} ${p.fileName.padEnd(16)} ${p.error ? `FAILED: ${p.error.slice(0, 120)}` : `check ${p.result!.check.status}, ${p.result!.ruleMap.length} rules mapped`}`);
+  }
+  return t.programs.some(p => p.error) ? 1 : 0;
+}
 import { Stdb } from './stdb.ts';
 
 async function main(argv: string[]): Promise<number> {
@@ -57,7 +68,30 @@ async function main(argv: string[]): Promise<number> {
     console.log(`programs: ${r.components.length}, verifiable: ${v.join(', ') || 'none'}`);
     console.log(`rules: ${r.components.reduce((n, x) => n + x.ruleIds.length, 0)}${failed.length ? `, analysis failed for: ${failed.join(', ')}` : ''}`);
     if (r.system) console.log(`target: ${r.system.target_language} (${r.system.target_runtime}); first slice: ${r.system.first_slice.join(', ')}`);
-    return failed.length || !r.system ? 1 : 0;
+    if (!rest.includes('--translate')) return failed.length || !r.system ? 1 : 0;
+
+    // Chained: hand the analysis straight to the Translator.
+    console.log('');
+    const t = await translateRun(contextFromAnalysis(r), {
+      only: flag('--only')?.split(',').filter(Boolean),
+      dryRun: rest.includes('--dry-run'),
+    });
+    return printTranslation(t) || (failed.length ? 1 : 0);
+  }
+
+  if (cmd === 'translate') {
+    const flag = (name: string) => {
+      const i = rest.indexOf(name);
+      return i >= 0 ? rest[i + 1] : undefined;
+    };
+    const runId = rest[0] && !rest[0].startsWith('--') ? rest[0] : undefined;
+    const ctx = await contextFromDb(new Stdb(), runId, flag('--zip'));
+    const t = await translateRun(ctx, {
+      only: flag('--only')?.split(',').filter(Boolean),
+      concurrency: flag('--concurrency') ? Number(flag('--concurrency')) : undefined,
+      dryRun: rest.includes('--dry-run'),
+    });
+    return printTranslation(t);
   }
 
   if (cmd === 'modernize' && rest[0]) {
@@ -78,13 +112,18 @@ async function main(argv: string[]): Promise<number> {
       bundle = a.bundle;
     }
     const r = await modernizeRun(rest[0], runId, {
-      only: flag('--only'),
+      only: flag('--only')?.split(',').filter(Boolean),
       maxAttempts: flag('--attempts') ? Number(flag('--attempts')) : undefined,
       bundle,
     });
-    console.log(`
-run ${r.runId}: ${r.status.toUpperCase()}`);
-    console.log(`${r.component} -> ${r.target}; debug ${r.debugPassed}/${r.debugTotal}, holdout ${r.holdoutPassed}/${r.holdoutTotal}, ${r.attempts} debug attempt(s)`);
+    console.log(`\nrun ${r.runId}: ${r.status.toUpperCase()} (${r.target})`);
+    for (const p of r.programs) {
+      console.log(
+        `  ${p.status === 'passed' ? 'PASS' : 'FAIL'}  ${p.name.padEnd(10)} ${p.file.padEnd(16)} ` +
+          `debug ${p.debugPassed}/${p.debugTotal}, holdout ${p.holdoutPassed}/${p.holdoutTotal}, ${p.attempts} debug attempt(s)` +
+          (p.status === 'passed' ? '' : `: ${p.reason.slice(0, 160)}`)
+      );
+    }
     console.log(r.reason);
     return r.status === 'ready_for_cutover' ? 0 : 1;
   }
@@ -98,7 +137,17 @@ run ${r.runId}: ${r.status.toUpperCase()}`);
     return 0;
   }
 
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]\n  modernize <legacy.zip> [--run <analyzed run id>] [--only PROGRAM] [--attempts N]\n  delete-run <run id> [<run id>...]   (permanent)');
+  console.error(
+    [
+      'usage:',
+      '  dockerize <legacy.zip>',
+      '  run <image> [--stdin file] [-- cmd args...]',
+      '  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run] [--translate]',
+      '  translate [run id] [--zip legacy.zip] [--only NAME,NAME] [--concurrency N] [--dry-run]',
+      '  modernize <legacy.zip> [--run <analyzed run id>] [--only NAME,NAME] [--attempts N]',
+      '  delete-run <run id> [<run id>...]   (permanent)',
+    ].join('\n')
+  );
   return 2;
 }
 
