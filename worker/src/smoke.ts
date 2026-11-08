@@ -60,8 +60,12 @@ async function smoke(): Promise<number> {
   await db.setTargetLanguage(id, 'Java 21');
   await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: false });
   await db.addAnalysis(id, 'component', 'src/a.cbl', { name: 'A', verifiable: true }); // same key: replaces
+  await db.heartbeat(id);
+  await expectReject('rejects skipping a stage (translating -> shadow)', () => db.setRunStatus(id, 'shadow'));
+  await db.setRunStatus(id, 'verifying');
+  await db.setRunStatus(id, 'shadow');
   await db.finishRun(id, 'ready_for_cutover');
-  check('all 16 reducers accepted (writer token works)', true);
+  check('all reducers accepted (writer token works)', true);
 
   // Validation must reject bad input ---------------------------------------
   await expectReject('rejects an unknown status', () => db.setRunStatus(id, 'bogus'));
@@ -79,6 +83,16 @@ async function smoke(): Promise<number> {
   const stranger = await newIdentity(db.host);
   const anon = new Stdb({ token: stranger.token });
   await expectReject('rejects an identity that is not a writer', () => anon.logEvent(`${id}:evt-3`, id, 'x', 'y'));
+  await expectReject('dashboard identity cannot un-verify a rule', () => anon.updateRuleStatus(`${id}:r-1`, 'pending'));
+  try {
+    await anon.updateRuleStatus(`${id}:r-1`, 'approved');
+    check('dashboard identity can approve a verified rule', true);
+  } catch (e) {
+    check('dashboard identity can approve a verified rule', false, e instanceof Error ? e.message.slice(0, 120) : String(e));
+  }
+  const summary = (await db.sql(`SELECT * FROM run_summary WHERE run_id = '${id}'`))[0];
+  check('run_summary view counts tests and rules', !!summary && Number(summary.tests_total) === 2 && Number(summary.rules_approved) === 1,
+    JSON.stringify(summary ?? {}).slice(0, 160));
 
   // Read back ---------------------------------------------------------------
   const one = async (q: string) => (await db.sql(q))[0];
@@ -93,7 +107,7 @@ async function smoke(): Promise<number> {
   check('program row stored (with language)', prog?.language === 'cobol');
   check('code_version stored', (await count('code_version', `run_id = '${id}'`)) === 1);
   const rule = await one(`SELECT * FROM rule WHERE run_id = '${id}'`);
-  check('rule stored, status updated', rule?.status === 'verified' && rule?.when_ === 'it is rounded',
+  check('rule stored, status updated', rule?.status === 'approved' && rule?.when_ === 'it is rounded',
     `status=${rule?.status}`);
   check('test_case rows stored', (await count('test_case', `run_id = '${id}'`)) === 2);
   const tc2 = await one(`SELECT * FROM test_case WHERE id = '${id}:tc-2'`);
