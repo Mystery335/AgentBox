@@ -1,3 +1,4 @@
+import LiveNewModernization from "./LiveNewModernization";
 import LiveOverview from "./LiveOverview";
 import LiveAgentActivity from "./LiveAgentActivity";
 import { useSyncExternalStore } from "react";
@@ -46,6 +47,8 @@ function App() {
     <>
       {(route.startsWith("#/workspace/activity") || route.startsWith("#/workspace/validation") || route.startsWith("#/workspace/documentation")) ? (
         <LiveAgentActivity documentation={route.startsWith("#/workspace/documentation")} validation={route.startsWith("#/workspace/validation")} requestedRunId={new URLSearchParams(route.split("?")[1] ?? "").get("run") ?? undefined} />
+      ) : route.startsWith("#/workspace/new") ? (
+        <LiveNewModernization />
       ) : route.split("?")[0].replace(/\/$/, "") === "#/workspace" ? (
         <LiveOverview />
       ) : isWorkspace ? (

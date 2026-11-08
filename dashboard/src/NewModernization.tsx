@@ -75,18 +75,12 @@ export default function NewModernization() {
   };
   return (
     <>
-      <p className="nm-eyebrow">NEW MODERNIZATION</p>
       <h1 className="nm-title">Bring your legacy code forward.</h1>
       <p className="nm-intro">
         Upload source files, choose a target language, then review the agents’
         work.
       </p>
       <form className="nm-form" onSubmit={submit}>
-        <img
-          className="ws-trim"
-          src="/design/new-modernization/64a3d.svg"
-          alt=""
-        />
         <h2>1. Project details</h2>
         <label className="nm-project-label" htmlFor="nm-project">
           Project name
