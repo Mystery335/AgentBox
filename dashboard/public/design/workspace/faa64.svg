@@ -1,0 +1,23 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="286" height="110" viewBox="0 0 286 110" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Cyberpunk / pink-violet panel trim">
+<path id="Vector" d="M18 1H124L130 6H146L152 1H178L186 9" stroke-width="2" stroke="url(#paint0_linear_0_111)"/>
+<path id="Vector_2" d="M1 42V18L14 5M285 40V91L269 107H193L185 100H129M3 70V93L17 107H82" stroke-width="1.5" stroke="url(#paint1_linear_0_111)"/>
+<g id="Vector_3" opacity="0.85">
+<path d="M221 6L229 14ZM229 6L237 14ZM237 6L245 14Z" fill="black"/>
+<path d="M221 6L229 14M229 6L237 14M237 6L245 14" stroke-width="2" stroke="#FF86D9"/>
+</g>
+<path id="Vector_4" d="M156 108H180L185 103H217" stroke-width="2" stroke="#977DFF"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_111" x1="18" y1="1" x2="186" y2="1" gradientUnits="userSpaceOnUse">
+<stop stop-color="#85B9FF"/>
+<stop offset="0.48" stop-color="#977DFF"/>
+<stop offset="1" stop-color="#FF54C9"/>
+</linearGradient>
+<linearGradient id="paint1_linear_0_111" x1="1" y1="5" x2="285" y2="5" gradientUnits="userSpaceOnUse">
+<stop stop-color="#85B9FF"/>
+<stop offset="0.48" stop-color="#977DFF"/>
+<stop offset="1" stop-color="#FF54C9"/>
+</linearGradient>
+</defs>
+</svg>
