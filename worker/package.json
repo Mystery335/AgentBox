@@ -10,7 +10,8 @@
     "run-legacy": "tsx src/cli.ts run",
     "test": "tsx --test test/*.test.ts",
     "identity": "tsx src/smoke.ts identity",
-    "smoke": "tsx src/smoke.ts"
+    "smoke": "tsx src/smoke.ts",
+    "nemotron-check": "tsx src/nemotron-check.ts"
   },
   "dependencies": {
     "yauzl": "^3.4.0"

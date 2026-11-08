@@ -64,6 +64,32 @@ export class Stdb {
     }
   }
 
+  /**
+   * Calls a procedure and returns its return value. Same endpoint as reducers;
+   * a string return value may come back JSON-encoded, so it is decoded once.
+   */
+  async callProcedure(name: string, ...args: unknown[]): Promise<string> {
+    const url = `${this.host}/v1/database/${encodeURIComponent(this.db)}/call/${name}`;
+    const res = await fetch(url, { method: 'POST', headers: this.#headers(true), body: JSON.stringify(args) });
+    const text = await res.text();
+    if (!res.ok) throw new StdbError(`${name} failed (${res.status}): ${text.trim().slice(0, 500)}`, res.status);
+    try {
+      const v = JSON.parse(text);
+      return typeof v === 'string' ? v : text;
+    } catch {
+      return text;
+    }
+  }
+
+  // ---- Nemotron (runs inside the module; the API key never leaves SpacetimeDB)
+  nemotronPing = () => this.callProcedure('nemotron_ping');
+  /** OpenAI-style chat request; returns NVIDIA's response JSON (parsed). */
+  nemotronChat = async (request: { messages: unknown[]; [k: string]: unknown }) =>
+    JSON.parse(await this.callProcedure('nemotron_chat', JSON.stringify(request))) as {
+      choices: { message: { role: string; content: string | null; tool_calls?: unknown[] } }[];
+      usage?: Record<string, number>;
+    };
+
   /** Runs SQL; returns rows keyed by column name. */
   async sql(query: string): Promise<Row[]> {
     const url = `${this.host}/v1/database/${encodeURIComponent(this.db)}/sql`;

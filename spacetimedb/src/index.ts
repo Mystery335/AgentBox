@@ -16,7 +16,9 @@ import {
   CaseConversionPolicy,
   type InferSchema,
   type ReducerCtx,
+  type ProcedureCtx,
 } from 'spacetimedb/server';
+import { TimeDuration } from 'spacetimedb';
 
 // ---------------------------------------------------------------- enums
 const RUN_STATUSES = [
@@ -199,9 +201,19 @@ const spacetimedb = schema(
   agent_event,
   writer,
   },
-  // Keep names exactly as written (the default SnakeCase policy could rename
-  // when_/then_), so Python's HTTP calls and the dashboard see the same names.
-  { CASE_CONVERSION_POLICY: CaseConversionPolicy.None }
+  {
+    // Keep names exactly as written (the default SnakeCase policy could rename
+    // when_/then_), so the worker's HTTP calls and the dashboard see the same names.
+    CASE_CONVERSION_POLICY: CaseConversionPolicy.None,
+    // Set on spacetimedb.com (database -> Environment) or with
+    // `spacetime publish --env-only`. Values are never built into the module.
+    // Optional so the module still publishes before the key is set; the
+    // Nemotron procedures fail with a clear message until it is.
+    env: {
+      NVIDIA_API_KEY: t.option(t.string()),
+      NEMOTRON_MODEL: t.option(t.string()),
+    },
+  }
 );
 export default spacetimedb;
 
@@ -487,3 +499,75 @@ export const finish_run = spacetimedb.reducer(
     ctx.db.run.id.update({ ...r, status, finished_at: ctx.timestamp });
   }
 );
+
+// ------------------------------------------------------------ Nemotron
+// Procedures (not reducers) because they make HTTP calls. The API key lives
+// only in the database's environment (ctx.env); it is never returned, logged
+// or stored in a table. Both procedures are writer-only so nobody else can
+// spend the key's quota.
+const NVIDIA_CHAT_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+const DEFAULT_MODEL = 'nvidia/nemotron-3.5-lightning-30b-a3b';
+// Maincloud allows procedures at most 180 s; leave headroom.
+const NEMOTRON_TIMEOUT = TimeDuration.fromMillis(170_000);
+
+type PCtx = ProcedureCtx<InferSchema<typeof spacetimedb>>;
+
+function requireWriterProc(ctx: PCtx): void {
+  const hex = ctx.sender.toHexString();
+  const ok = ctx.withTx(tx => !!tx.db.writer.identity_hex.find(hex));
+  if (!ok) throw new SenderError('not a writer: register this identity with add_writer');
+}
+
+/** Sends one chat-completions request. Returns { status, body } with the key scrubbed from the body. */
+function postNemotron(ctx: PCtx, request: Record<string, unknown>): { status: number; body: string; model: string } {
+  const key = ctx.env.NVIDIA_API_KEY;
+  if (!key) throw new SenderError('NVIDIA_API_KEY is not set in the database environment');
+  const model = typeof request.model === 'string' && request.model ? request.model : ctx.env.NEMOTRON_MODEL || DEFAULT_MODEL;
+  const res = ctx.http.fetch(NVIDIA_CHAT_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ ...request, model, stream: false }),
+    timeout: NEMOTRON_TIMEOUT,
+  });
+  return { status: res.status, body: res.text().split(key).join('[redacted]'), model };
+}
+
+/** Health check: proves the key is set and accepted. Returns status only, never the key. */
+export const nemotron_ping = spacetimedb.procedure(t.string(), ctx => {
+  requireWriterProc(ctx);
+  const r = postNemotron(ctx, {
+    messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+    max_tokens: 16,
+    temperature: 0,
+  });
+  let reply = '';
+  if (r.status === 200) {
+    try {
+      reply = String(JSON.parse(r.body).choices?.[0]?.message?.content ?? '').slice(0, 100);
+    } catch {
+      reply = '(unparseable response)';
+    }
+  }
+  return JSON.stringify({ ok: r.status === 200, status: r.status, model: r.model, reply, error: r.status === 200 ? '' : r.body.slice(0, 300) });
+});
+
+/**
+ * Chat completion for the agents. `request_json` is an OpenAI-style request
+ * body (messages, tools, temperature, max_tokens, ...); `model` defaults to
+ * NEMOTRON_MODEL or nemotron-3.5-lightning. Returns NVIDIA's response JSON.
+ */
+export const nemotron_chat = spacetimedb.procedure({ request_json: t.string() }, t.string(), (ctx, { request_json }) => {
+  requireWriterProc(ctx);
+  let request: Record<string, unknown>;
+  try {
+    request = JSON.parse(request_json);
+  } catch {
+    throw new SenderError('request_json is not valid JSON');
+  }
+  if (!request || typeof request !== 'object' || !Array.isArray(request.messages)) {
+    throw new SenderError('request_json must be an object with a messages array');
+  }
+  const r = postNemotron(ctx, request);
+  if (r.status !== 200) throw new SenderError(`Nemotron returned HTTP ${r.status}: ${r.body.slice(0, 500)}`);
+  return r.body;
+});

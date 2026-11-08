@@ -62,7 +62,14 @@ async function smoke(): Promise<number> {
 
   // Validation must reject bad input ---------------------------------------
   await expectReject('rejects an unknown status', () => db.setRunStatus(id, 'bogus'));
-  await expectReject('rejects writes to a finished run', () => db.logEvent(`${id}:evt-2`, id, 'x', 'late'));
+  await expectReject('rejects writes to a finished run', () => db.setRunStatus(id, 'debugging'));
+  // log_event is deliberately allowed after finish_run, so closing messages still land.
+  try {
+    await db.logEvent(`${id}:evt-2`, id, 'x', 'late');
+    check('allows log_event after the run finished', true);
+  } catch (e) {
+    check('allows log_event after the run finished', false, e instanceof Error ? e.message.slice(0, 120) : String(e));
+  }
   await expectReject('rejects a duplicate run id', () => db.startRun(id, 'SMOKE', 'cobol', 'python', sha, 'x', '1'));
 
   // Writer check: a fresh identity must be rejected -------------------------
@@ -93,7 +100,7 @@ async function smoke(): Promise<number> {
   check('passing result drops modern_output', passed?.modern_output === '');
   check('change stored', (await count('change', `run_id = '${id}'`)) === 1);
   check('debug_attempt stored', (await count('debug_attempt', `run_id = '${id}'`)) === 1);
-  check('agent_event stored (late write was rejected)', (await count('agent_event', `run_id = '${id}'`)) === 1);
+  check('agent_event stored (incl. late event)', (await count('agent_event', `run_id = '${id}'`)) === 2);
 
   try {
     await db.sql('SELECT * FROM writer');
