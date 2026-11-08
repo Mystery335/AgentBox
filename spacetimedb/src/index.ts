@@ -1,6 +1,6 @@
 // AgentProof SpacetimeDB module (database "legacy-data" on Maincloud).
 // Data contract: 10 public tables (incl. `analysis`) + private `writer`,
-// 16 reducers, 2 procedures (nemotron_ping, nemotron_chat).
+// 17 reducers (incl. delete_run), 2 procedures (nemotron_ping, nemotron_chat).
 //
 // Field choice for the §7.12 conflict: the team's original plan fields, with the
 // v2 additions on top (split, kind, rule_id, disposition, legacy_sha256,
@@ -530,6 +530,32 @@ export const set_target_language = spacetimedb.reducer(
     ctx.db.run.id.update({ ...r, target_language });
   }
 );
+
+// 17: permanently deletes one run and every row that belongs to it, plus its
+// program row when no other run uses that program. Writer-only. Works on
+// finished and unfinished runs.
+export const delete_run = spacetimedb.reducer({ run_id: t.string() }, (ctx, { run_id }) => {
+  requireWriter(ctx);
+  const r = ctx.db.run.id.find(run_id);
+  if (!r) throw new SenderError(`unknown run "${run_id}"`);
+  ctx.db.analysis.run_id.delete(run_id);
+  ctx.db.rule.run_id.delete(run_id);
+  ctx.db.agent_event.run_id.delete(run_id);
+  ctx.db.test_case.run_id.delete(run_id);
+  ctx.db.test_result.run_id.delete(run_id);
+  ctx.db.code_version.run_id.delete(run_id);
+  ctx.db.change.run_id.delete(run_id);
+  ctx.db.debug_attempt.run_id.delete(run_id);
+  ctx.db.run.id.delete(run_id);
+  let shared = false;
+  for (const other of ctx.db.run.iter()) {
+    if (other.legacy_sha256 === r.legacy_sha256) {
+      shared = true;
+      break;
+    }
+  }
+  if (!shared) ctx.db.program.sha256.delete(r.legacy_sha256);
+});
 
 // 13: allowed after a run finishes too, so closing messages still land.
 export const log_event = spacetimedb.reducer(

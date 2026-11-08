@@ -10,7 +10,27 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runToolLoop, type ToolDef } from '../llm.ts';
+import { runToolLoop, type ToolDef, type ToolLoopResult } from '../llm.ts';
+
+/** What the model did for one step: proof that Nemotron produced the answer. */
+export interface LlmStats {
+  models: string[];
+  turns: number;
+  tool_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  cached_turns: number;
+}
+const stats = (r: ToolLoopResult): LlmStats => ({
+  models: r.models,
+  turns: r.turns,
+  tool_calls: r.toolCalls,
+  prompt_tokens: r.promptTokens,
+  completion_tokens: r.completionTokens,
+  reasoning_tokens: r.reasoningTokens,
+  cached_turns: r.cachedTurns,
+});
 import type { Stdb } from '../stdb.ts';
 import type { Component, InventoryFile, ScanResult } from './scan.ts';
 
@@ -212,6 +232,33 @@ function componentBrief(c: Component): string {
   );
 }
 
+/**
+ * Accepts reasonable slips instead of spending a turn on them: missing lists
+ * become empty, a single string becomes a one-item list, a reversed line range
+ * is swapped, and a missing disposition reason gets a neutral default.
+ */
+export function normalizeComponent(a: Record<string, unknown>): Record<string, unknown> {
+  const list = (v: unknown) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
+  const out: Record<string, unknown> = { ...a };
+  for (const k of ['inputs', 'outputs', 'data_layouts', 'risks', 'business_rules']) out[k] = list(a[k]);
+  out.risks = (out.risks as unknown[]).map(r => (typeof r === 'string' ? r : JSON.stringify(r)));
+  out.modernization_notes = typeof a.modernization_notes === 'string' ? a.modernization_notes : '';
+  out.business_rules = (out.business_rules as Record<string, unknown>[]).map(r => {
+    if (!r || typeof r !== 'object') return r;
+    let s = Number(r.start_line);
+    let e = Number(r.end_line);
+    if (Number.isInteger(s) && Number.isInteger(e) && e < s) [s, e] = [e, s];
+    return {
+      ...r,
+      start_line: s,
+      end_line: e,
+      disposition: typeof r.disposition === 'string' ? r.disposition.toLowerCase().replace(/[\s-]+/g, '_') : r.disposition,
+      disposition_reason: typeof r.disposition_reason === 'string' && r.disposition_reason.trim() ? r.disposition_reason : r.disposition === 'keep' ? 'Normal program behaviour.' : r.disposition_reason,
+    };
+  });
+  return out;
+}
+
 export function validateComponent(a: Record<string, unknown>, lines: number): string | undefined {
   if (typeof a.summary !== 'string' || a.summary.trim().length < 20) return 'summary must be 2-4 sentences';
   const rules = a.business_rules;
@@ -237,12 +284,10 @@ export async function analyzeComponent(
   c: Component,
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
   onReject?: (problem: string) => void
-): Promise<{ analysis: ComponentAnalysis; toolCalls: number; turns: number }> {
+): Promise<{ analysis: ComponentAnalysis; llm?: LlmStats }> {
   if (c.codeLines === 0) {
     return {
       analysis: { summary: 'The source file is empty; there is no behaviour to analyze or migrate.', inputs: [], outputs: [], business_rules: [], data_layouts: [], risks: ['empty source file'], modernization_notes: 'Nothing to translate.' },
-      toolCalls: 0,
-      turns: 0,
     };
   }
   const source = await view.numbered(c.path, 1, 400);
@@ -253,11 +298,13 @@ export async function analyzeComponent(
     tools: [...PROJECT_TOOLS, SUBMIT_COMPONENT],
     handle: (name, args) => handleProjectTool(view, name, args),
     finalTool: SUBMIT_COMPONENT.name,
+    normalize: normalizeComponent,
     validate: a => validateComponent(a, c.lines),
+    maxTurns: 16,
     onToolCall,
     onReject,
   });
-  return { analysis: r.answer as unknown as ComponentAnalysis, toolCalls: r.toolCalls, turns: r.turns };
+  return { analysis: r.answer as unknown as ComponentAnalysis, llm: stats(r) };
 }
 
 // ---------------------------------------------------- system analysis
@@ -302,7 +349,7 @@ export async function analyzeSystem(
   components: { c: Component; a?: ComponentAnalysis }[],
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
   onReject?: (problem: string) => void
-): Promise<SystemAnalysis> {
+): Promise<{ system: SystemAnalysis; llm: LlmStats }> {
   const verifiable = new Set(components.filter(x => x.c.verifiable).map(x => x.c.path));
   const scan = view.scan;
   const brief = {
@@ -343,5 +390,5 @@ export async function analyzeSystem(
     onToolCall,
     onReject,
   });
-  return r.answer as unknown as SystemAnalysis;
+  return { system: r.answer as unknown as SystemAnalysis, llm: stats(r) };
 }

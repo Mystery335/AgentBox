@@ -139,6 +139,8 @@ export class Stdb {
   addAnalysis = (runId: string, kind: 'system' | 'inventory' | 'component' | 'runtime', key: string, json: unknown) =>
     this.call('add_analysis', runId, kind, key, JSON.stringify(json));
   setTargetLanguage = (runId: string, targetLanguage: string) => this.call('set_target_language', runId, targetLanguage);
+  /** Permanently deletes a run and all its rows (and its program if unused). */
+  deleteRun = (runId: string) => this.call('delete_run', runId);
 }
 
 function columnName(name: unknown): string | undefined {

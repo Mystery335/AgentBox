@@ -135,3 +135,23 @@ describe('validateComponent', () => {
     assert.match(validateComponent({ ...base, business_rules: [{ ...rule, disposition: 'maybe' }] }, 10)!, /disposition/);
   });
 });
+
+describe('answer repair', async () => {
+  const { decodeNestedJson } = await import('../src/llm.ts');
+  const { normalizeComponent } = await import('../src/analyzer/agent.ts');
+  it('decodes arrays sent as JSON text', () => {
+    const a = decodeNestedJson({ risks: '["a", "b"]', summary: 'text [not json', business_rules: [{ title: 't', start_line: 3 }] });
+    assert.deepEqual(a.risks, ['a', 'b']);
+    assert.equal(a.summary, 'text [not json');
+    assert.deepEqual(a.business_rules, [{ title: 't', start_line: 3 }]);
+  });
+  it('fills missing lists, swaps reversed ranges, normalizes disposition', () => {
+    const n = normalizeComponent({ summary: 's', risks: 'one risk', business_rules: [{ start_line: 9, end_line: 4, disposition: 'Drop Candidate', disposition_reason: 'dead' }] });
+    assert.deepEqual(n.inputs, []);
+    assert.deepEqual(n.risks, ['one risk']);
+    const r = (n.business_rules as Record<string, unknown>[])[0];
+    assert.equal(r.start_line, 4);
+    assert.equal(r.end_line, 9);
+    assert.equal(r.disposition, 'drop_candidate');
+  });
+});

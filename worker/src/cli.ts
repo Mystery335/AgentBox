@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { dockerizeZip, DockerizeError } from './dockerize.ts';
 import { runLocked } from './docker.ts';
 import { analyzeZip } from './analyzer/index.ts';
+import { Stdb } from './stdb.ts';
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -58,7 +59,16 @@ async function main(argv: string[]): Promise<number> {
     return failed.length || !r.system ? 1 : 0;
   }
 
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]');
+  if (cmd === 'delete-run' && rest[0]) {
+    const db = new Stdb();
+    for (const id of rest) {
+      await db.deleteRun(id);
+      console.log(`deleted ${id}`);
+    }
+    return 0;
+  }
+
+  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]\n  delete-run <run id> [<run id>...]   (permanent)');
   return 2;
 }
 

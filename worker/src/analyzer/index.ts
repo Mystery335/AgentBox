@@ -7,7 +7,10 @@
 import { randomBytes } from 'node:crypto';
 import { dockerizeZip, type LegacyBundle } from '../dockerize.ts';
 import { Stdb } from '../stdb.ts';
-import { analyzeComponent, analyzeSystem, ProjectView, type ComponentAnalysis, type SystemAnalysis } from './agent.ts';
+import { analyzeComponent, analyzeSystem, ProjectView, type ComponentAnalysis, type LlmStats, type SystemAnalysis } from './agent.ts';
+
+const llmNote = (l?: LlmStats) =>
+  l ? `${l.models.join(', ') || 'model not reported'}, ${l.turns} turns, ${l.tool_calls} tool calls, ${(l.prompt_tokens + l.completion_tokens).toLocaleString('en-US')} tokens (${l.reasoning_tokens.toLocaleString('en-US')} reasoning)${l.cached_turns ? `, ${l.cached_turns}/${l.turns} turns from cache` : ''}` : 'no model call (empty file)';
 import { decideVerifiability, scanProject, type Component, type ScanResult } from './scan.ts';
 import { probeCompile } from './runtime.ts';
 
@@ -24,8 +27,9 @@ export interface AnalyzeResult {
   runId: string;
   bundle: LegacyBundle;
   scan: ScanResult;
-  components: { c: Component; a?: ComponentAnalysis; error?: string; ruleIds: string[] }[];
+  components: { c: Component; a?: ComponentAnalysis; llm?: LlmStats; error?: string; ruleIds: string[] }[];
   system?: SystemAnalysis;
+  systemLlm?: LlmStats;
 }
 
 /** Runs `fn` over items with at most `n` in flight. */
@@ -123,13 +127,14 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
           problem => void event('analyzer', `${c.name}: answer rejected by validation (${problem.slice(0, 160)}); retrying`)
         );
         row.a = r.analysis;
+        row.llm = r.llm;
         let n = 0;
         for (const rule of r.analysis.business_rules) {
           const id = `${runId}:${c.name}:BR-${String(++n).padStart(2, '0')}`;
           await db.addRule(id, runId, rule.title, rule.given, rule.when, rule.then, rule.start_line, rule.end_line, 0, 0, rule.disposition);
           row.ruleIds.push(id);
         }
-        await event('analyzer', `${c.name}: ${r.analysis.business_rules.length} rules, ${r.toolCalls} tool calls${reads.length ? ` (read ${[...new Set(reads)].join(', ')})` : ''}`);
+        await event('analyzer', `${c.name}: ${r.analysis.business_rules.length} rules${reads.length ? `; read ${[...new Set(reads)].join(', ')}` : ''}. Nemotron: ${llmNote(r.llm)}`);
       } catch (e) {
         row.error = e instanceof Error ? e.message : String(e);
         await event('analyzer', `${c.name}: analysis failed: ${row.error.slice(0, 200)}`);
@@ -152,6 +157,7 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
       verifiable: c.verifiable,
       deferred_reasons: c.deferredReasons,
       rule_ids: row.ruleIds,
+      ...(row.llm ? { llm: row.llm } : {}),
       ...(row.a ? { analysis: row.a } : {}),
       ...(row.error ? { analysis_error: row.error } : {}),
     });
@@ -162,20 +168,37 @@ export async function analyzeZip(zipPath: string, opts: AnalyzeOptions = {}): Pr
   const result: AnalyzeResult = { runId, bundle, scan, components: results };
   await event('analyzer', 'Deciding target language and first slice');
   try {
-    const sys = await analyzeSystem(db, view, results.filter(r => targets.includes(r.c)), undefined, problem =>
+    const { system: sys, llm: sysLlm } = await analyzeSystem(db, view, results.filter(r => targets.includes(r.c)), undefined, problem =>
       void event('analyzer', `System decision rejected by validation (${problem.slice(0, 160)}); retrying`)
     );
     result.system = sys;
+    result.systemLlm = sysLlm;
     await db.setTargetLanguage(runId, sys.target_language);
-    await db.addAnalysis(runId, 'system', '', sys);
+    await db.addAnalysis(runId, 'system', '', { ...sys, llm: sysLlm, llm_totals: totals(results, sysLlm) });
     await db.setDocumentation(runId, documentation(name, bundle, scan, results, sys));
-    await event('analyzer', `Target: ${sys.target_language} (${sys.target_runtime}). First slice: ${sys.first_slice.join(', ') || 'none'}`);
+    await event('analyzer', `Target: ${sys.target_language} (${sys.target_runtime}). First slice: ${sys.first_slice.join(', ') || 'none'}. Nemotron: ${llmNote(sysLlm)}`);
+    const t = totals(results, sysLlm);
+    await event('analyzer', `Nemotron totals for this run: ${t.models.join(', ')}; ${t.calls} model calls, ${t.tool_calls} tool calls, ${(t.prompt_tokens + t.completion_tokens).toLocaleString('en-US')} tokens (${t.reasoning_tokens.toLocaleString('en-US')} reasoning)`);
   } catch (e) {
     await event('analyzer', `System analysis failed: ${e instanceof Error ? e.message.slice(0, 200) : e}`);
     await db.setDocumentation(runId, documentation(name, bundle, scan, results));
   }
   await event('analyzer', 'Analysis complete');
   return result;
+}
+
+/** Sums model usage over the whole run. */
+function totals(rows: AnalyzeResult['components'], sys?: LlmStats) {
+  const all = [...rows.map(r => r.llm).filter((l): l is LlmStats => !!l), ...(sys ? [sys] : [])];
+  return {
+    models: [...new Set(all.flatMap(l => l.models))],
+    calls: all.reduce((n, l) => n + l.turns, 0),
+    tool_calls: all.reduce((n, l) => n + l.tool_calls, 0),
+    prompt_tokens: all.reduce((n, l) => n + l.prompt_tokens, 0),
+    completion_tokens: all.reduce((n, l) => n + l.completion_tokens, 0),
+    reasoning_tokens: all.reduce((n, l) => n + l.reasoning_tokens, 0),
+    cached_turns: all.reduce((n, l) => n + l.cached_turns, 0),
+  };
 }
 
 /** Markdown for run.documentation (the dashboard's "before" view). */

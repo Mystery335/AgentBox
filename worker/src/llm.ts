@@ -34,8 +34,13 @@ export interface ToolDef {
 }
 
 export interface ChatResponse {
+  /** Model that actually answered, as reported by NVIDIA. */
+  model?: string;
+  id?: string;
   choices: { finish_reason: string; message: { content: string | null; reasoning_content?: string; tool_calls?: ToolCall[] } }[];
   usage?: { prompt_tokens: number; completion_tokens: number; completion_tokens_details?: { reasoning_tokens?: number } };
+  /** Set locally when the answer came from .cache/nemotron (not sent by NVIDIA). */
+  fromCache?: boolean;
 }
 
 export interface ChatRequest {
@@ -55,7 +60,7 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
   const key = createHash('sha256').update(body).digest('hex');
   const file = path.join(CACHE_DIR, `${key}.json`);
   const useCache = process.env.NEMOTRON_CACHE !== '0';
-  if (useCache && existsSync(file)) return JSON.parse(await readFile(file, 'utf8')) as ChatResponse;
+  if (useCache && existsSync(file)) return { ...(JSON.parse(await readFile(file, 'utf8')) as ChatResponse), fromCache: true };
 
   let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -77,7 +82,33 @@ export async function chat(db: Stdb, request: ChatRequest): Promise<ChatResponse
   throw lastError;
 }
 
+/**
+ * Nemotron often sends array/object arguments as JSON text inside a string
+ * ("risks": "[\"a\", \"b\"]"). Decode those (top level and one level into
+ * arrays of objects) so a correct answer isn't rejected for its wrapping.
+ */
+export function decodeNestedJson(args: Record<string, unknown>): Record<string, unknown> {
+  const decode = (v: unknown): unknown => {
+    if (typeof v !== 'string') return v;
+    const t = v.trim();
+    if (!(t.startsWith('[') || t.startsWith('{'))) return v;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return v;
+    }
+  };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    const d = decode(v);
+    out[k] = Array.isArray(d) ? d.map(x => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).map(([kk, vv]) => [kk, decode(vv)])) : decode(x))) : d;
+  }
+  return out;
+}
+
 export interface ToolLoopOptions {
+  /** Repairs an answer before validation (fill defaults, fix obvious slips). */
+  normalize?: (args: Record<string, unknown>) => Record<string, unknown>;
   db: Stdb;
   system: string;
   user: string;
@@ -100,7 +131,13 @@ export interface ToolLoopResult {
   answer: Record<string, unknown>;
   turns: number;
   toolCalls: number;
+  /** Proof of which model did the work: model names NVIDIA reported, and token usage. */
+  models: string[];
+  promptTokens: number;
+  completionTokens: number;
   reasoningTokens: number;
+  /** How many of the turns were answered from the local cache. */
+  cachedTurns: number;
 }
 
 /**
@@ -117,6 +154,13 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
   const tools = o.tools.map(t => ({ type: 'function' as const, function: t }));
   let toolCalls = 0;
   let reasoningTokens = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let cachedTurns = 0;
+  const models = new Set<string>();
+  const result = (answer: Record<string, unknown>, turns: number): ToolLoopResult => ({
+    answer, turns, toolCalls, models: [...models], promptTokens, completionTokens, reasoningTokens, cachedTurns,
+  });
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     const forceFinal = turn >= maxTurns - 1;
@@ -128,6 +172,10 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
       temperature: 0,
     });
     reasoningTokens += res.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+    promptTokens += res.usage?.prompt_tokens ?? 0;
+    completionTokens += res.usage?.completion_tokens ?? 0;
+    if (res.model) models.add(res.model);
+    if (res.fromCache) cachedTurns++;
     const msg = res.choices[0]?.message;
     if (!msg) throw new Error('Nemotron returned no choices');
     const calls = msg.tool_calls ?? [];
@@ -147,11 +195,13 @@ export async function runToolLoop(o: ToolLoopOptions): Promise<ToolLoopResult> {
         messages.push({ role: 'tool', tool_call_id: call.id, content: 'ERROR: arguments were not valid JSON. Call the tool again with valid JSON.' });
         continue;
       }
+      args = decodeNestedJson(args);
       o.onToolCall?.(call.function.name, args);
 
       if (call.function.name === o.finalTool) {
+        if (o.normalize) args = o.normalize(args);
         const problem = o.validate?.(args);
-        if (!problem) return { answer: args, turns: turn, toolCalls, reasoningTokens };
+        if (!problem) return result(args, turn);
         o.onReject?.(problem);
         messages.push({ role: 'tool', tool_call_id: call.id, content: `REJECTED: ${problem}. Fix it and call ${o.finalTool} again.` });
         continue;
