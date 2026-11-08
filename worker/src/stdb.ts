@@ -109,7 +109,7 @@ export class Stdb {
     });
   }
 
-  // ---- the 14 reducers -------------------------------------------------
+  // ---- reducers -------------------------------------------------
   addWriter = (identityHex: string) => this.call('add_writer', identityHex);
   addProgram = (sha256: string, name: string, language: string, dialect: string, source: string) =>
     this.call('add_program', sha256, name, language, dialect, source);
@@ -117,6 +117,8 @@ export class Stdb {
               legacySha256: string, legacyRuntime: string, seed: string) =>
     this.call('start_run', runId, legacyName, legacyLanguage, targetLanguage, legacySha256, legacyRuntime, seed);
   setRunStatus = (runId: string, status: string) => this.call('set_run_status', runId, status);
+  /** Keeps the run alive for the watchdog (15 min without activity = failed). Call during long steps. */
+  heartbeat = (runId: string) => this.call('heartbeat', runId);
   setDocumentation = (runId: string, documentation: string) => this.call('set_documentation', runId, documentation);
   addCodeVersion = (runId: string, attempt: number, source: string, sha256: string, lint: string) =>
     this.call('add_code_version', runId, attempt, source, sha256, lint);
