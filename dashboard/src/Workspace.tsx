@@ -1,3 +1,5 @@
+import Documentation from "./Documentation";
+import { documentationData } from "./documentationData";
 import ValidationInvestigation from "./ValidationInvestigation";
 import { validationTests as tests } from "./validationData";
 import Badge from "./components/StatusBadge";
@@ -174,10 +176,12 @@ export default function Workspace({
   onNew,
   activity = false,
   investigation = false,
+  documentation = false,
 }: {
   onNew: () => void;
   activity?: boolean;
   investigation?: boolean;
+  documentation?: boolean;
 }) {
   const [activityAgent, setActivityAgent] = useState(2);
   const [tab, setTab] = useState("Code & rules");
@@ -219,6 +223,7 @@ export default function Workspace({
             visibleEvidence: tests,
             ...(activity ? { timeline: activityEvents } : {}),
             ...(investigation ? { investigation: tests } : {}),
+            ...(documentation ? { documentation: documentationData } : {}),
           },
           null,
           2,
@@ -236,13 +241,17 @@ export default function Workspace({
   const navigate = (next: string) => {
     setTab(next);
     window.location.hash =
-      next === "Validation" ? "/workspace/validation" : "/workspace";
+      next === "Validation"
+        ? "/workspace/validation"
+        : next === "Documentation"
+          ? "/workspace/documentation"
+          : "/workspace";
     document.getElementById("ws-content")?.scrollIntoView({ block: "start" });
   };
   return (
     <div className="workspace-viewport">
       <div
-        className={`workspace-shell ${activity ? "ws-activity" : ""} ${investigation ? "ws-investigation" : ""}`}
+        className={`workspace-shell ${activity ? "ws-activity" : ""} ${investigation ? "ws-investigation" : ""} ${documentation ? "ws-docs" : ""}`}
       >
         <aside className="ws-sidebar">
           <a href="#" className="brand">
@@ -254,6 +263,7 @@ export default function Workspace({
               className={
                 !activity &&
                 !investigation &&
+                !documentation &&
                 tab !== "Validation" &&
                 tab !== "Documentation"
                   ? "active"
@@ -280,11 +290,8 @@ export default function Workspace({
               ✓ &nbsp;Validation
             </button>
             <button
-              className={
-                !activity && !investigation && tab === "Documentation"
-                  ? "active"
-                  : ""
-              }
+              className={documentation ? "active" : ""}
+              aria-current={documentation ? "page" : undefined}
               onClick={() => navigate("Documentation")}
             >
               ▤ &nbsp;Documentation
@@ -315,29 +322,33 @@ export default function Workspace({
                 <h1>
                   {activity
                     ? "Agent activity"
-                    : investigation
-                      ? "Validation"
-                      : "Registration service"}
+                    : documentation
+                      ? "System documentation"
+                      : investigation
+                        ? "Validation"
+                        : "Registration service"}
                 </h1>
                 <p>
                   {activity
                     ? "Run 0042   ·   Four specialized agents   ·   Example live state"
-                    : investigation
-                      ? "Run 0042   ·   Same inputs, compared behavior   ·   Example run data"
-                      : "C → Java 21   ·   Run 0042   ·   Example run data"}
+                    : documentation
+                      ? "Registration service   ·   Generated from original source   ·   Review required"
+                      : investigation
+                        ? "Run 0042   ·   Same inputs, compared behavior   ·   Example run data"
+                        : "C → Java 21   ·   Run 0042   ·   Example run data"}
                 </p>
               </div>
               <Badge text={activity ? "Debugging" : "Needs review"} />
               <Button variant="neutral" size="small" onPress={exportReport}>
                 Export report
               </Button>
-              {!activity && !investigation && (
+              {!activity && !investigation && !documentation && (
                 <Button size="small" onPress={onNew}>
                   + New modernization
                 </Button>
               )}
             </div>
-            {!investigation && (
+            {!investigation && !documentation && (
               <div className="ws-stages">
                 {stages.map((stage, i) => (
                   <button
@@ -381,7 +392,15 @@ export default function Workspace({
                 ))}
               </div>
             )}
-            {investigation ? (
+            {documentation ? (
+              <Documentation
+                onNavigate={navigate}
+                onInspect={(ruleId) => {
+                  setSelected(ruleId);
+                  navigate("Code & rules");
+                }}
+              />
+            ) : investigation ? (
               <ValidationInvestigation
                 onNavigate={navigate}
                 onInspect={(ruleId) => {

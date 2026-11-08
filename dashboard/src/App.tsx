@@ -57,6 +57,7 @@ function App() {
           onNew={() => open("new")}
           activity={route.startsWith("#/workspace/activity")}
           investigation={route.startsWith("#/workspace/validation")}
+          documentation={route.startsWith("#/workspace/documentation")}
         />
       ) : (
         <div className="landing">
