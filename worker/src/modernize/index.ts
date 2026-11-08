@@ -200,6 +200,27 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
   const debugTotal = cases.length - holdoutTotal;
   await event('verifier', `Recorded ${cases.length} golden outputs from the legacy program: ${debugTotal} debug, ${holdoutTotal} holdout (the Debugger never sees holdout cases)`);
 
+  // What the dashboard needs that no table holds: the legacy source ("before"
+  // pane), the modern file name and the test names. Written now so a run in
+  // progress shows them; the final report below replaces this row (same key).
+  const reportBase = {
+    component: component.name,
+    legacy_path: component.path,
+    legacy_language: component.language,
+    legacy_source: ctx.source,
+    modern_file: target.file,
+    target: target.label,
+    target_image: target.image,
+    legacy_image: p.bundle.imageTag,
+    legacy_build: legacyBuild,
+    modern_build: target.build,
+    modern_run: target.run,
+    normalization: NORMALIZATION_POLICY,
+    cases: cases.length,
+    test_names: Object.fromEntries(cases.map(c => [c.id, c.tc.name])),
+  };
+  await db.addAnalysis(runId, 'verification', component.path, { ...reportBase, status: 'running', reason: '' });
+
   // 3. Translator, shown the legacy program's real output on a few DEBUG cases (never holdout).
   const examples = cases.filter(c => c.split === 'debug').slice(0, 4).map(c => ({ input: c.input, expected: c.expected }));
   await event('translator', `Translating ${component.name} (${component.path}, ${component.lines} lines, ${ctx.rules.length} rules) to ${target.label}${p.fallback ? ` (target "${p.targetLanguage}" has no sandbox profile yet, so Python is used)` : ''}`);
@@ -318,20 +339,7 @@ async function pipeline(p: PipelineArgs): Promise<ModernizeResult> {
   const hPass = scored.filter(s => s.c.split === 'holdout' && s.passed).length;
   const base = { attempts: attempt, debugPassed: dPass, debugTotal, holdoutPassed: hPass, holdoutTotal };
   const report = async (status: string, reason: string) =>
-    db.addAnalysis(runId, 'verification', component.path, {
-      component: component.name,
-      target: target.label,
-      target_image: target.image,
-      legacy_image: p.bundle.imageTag,
-      legacy_build: legacyBuild,
-      modern_build: target.build,
-      modern_run: target.run,
-      normalization: NORMALIZATION_POLICY,
-      cases: cases.length,
-      ...base,
-      status,
-      reason,
-    });
+    db.addAnalysis(runId, 'verification', component.path, { ...reportBase, ...base, status, reason });
 
   if (dPass !== debugTotal || hPass !== holdoutTotal) {
     const reason = `${debugTotal - dPass} debug and ${holdoutTotal - hPass} holdout case(s) still differ after ${attempt} debug attempt(s)`;

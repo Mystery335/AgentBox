@@ -604,3 +604,35 @@
     overflow-x: auto;
   }
 }
+
+/* Live data additions */
+.ws-run-picker {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.ws-run-picker select {
+  width: 100%;
+  max-width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(10, 14, 30, 0.85);
+  color: inherit;
+  font: inherit;
+  letter-spacing: normal;
+}
+.ws-evidence-pre {
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  white-space: pre;
+}
+.ws-rules {
+  max-height: 520px;
+  overflow-y: auto;
+}
