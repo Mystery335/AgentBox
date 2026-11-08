@@ -10,7 +10,7 @@ const links: { page: Page; href: string; label: string }[] = [
 export default function WorkspaceSidebar({ current }: { current: Page }) {
   return <aside className="la-sidebar">
     <a href="#" className="brand">▣ AgentBox</a>
-    <p>ENGINEERING WORKSPACE</p>
+    <p>WORKSPACE</p>
     <nav aria-label="Workspace navigation">
       {links.map(link => <a key={link.page} href={link.href} aria-current={current === link.page ? 'page' : undefined}>{link.label}</a>)}
     </nav>
