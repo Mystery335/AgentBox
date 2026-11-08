@@ -1,0 +1,11 @@
+# Store text with LF everywhere so legacy/modern output compares byte for byte
+# on Windows and inside the Linux container.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
