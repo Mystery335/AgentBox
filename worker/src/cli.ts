@@ -112,13 +112,18 @@ async function main(argv: string[]): Promise<number> {
       bundle = a.bundle;
     }
     const r = await modernizeRun(rest[0], runId, {
-      only: flag('--only'),
+      only: flag('--only')?.split(',').filter(Boolean),
       maxAttempts: flag('--attempts') ? Number(flag('--attempts')) : undefined,
       bundle,
     });
-    console.log(`
-run ${r.runId}: ${r.status.toUpperCase()}`);
-    console.log(`${r.component} -> ${r.target}; debug ${r.debugPassed}/${r.debugTotal}, holdout ${r.holdoutPassed}/${r.holdoutTotal}, ${r.attempts} debug attempt(s)`);
+    console.log(`\nrun ${r.runId}: ${r.status.toUpperCase()} (${r.target})`);
+    for (const p of r.programs) {
+      console.log(
+        `  ${p.status === 'passed' ? 'PASS' : 'FAIL'}  ${p.name.padEnd(10)} ${p.file.padEnd(16)} ` +
+          `debug ${p.debugPassed}/${p.debugTotal}, holdout ${p.holdoutPassed}/${p.holdoutTotal}, ${p.attempts} debug attempt(s)` +
+          (p.status === 'passed' ? '' : `: ${p.reason.slice(0, 160)}`)
+      );
+    }
     console.log(r.reason);
     return r.status === 'ready_for_cutover' ? 0 : 1;
   }
@@ -132,8 +137,17 @@ run ${r.runId}: ${r.status.toUpperCase()}`);
     return 0;
   }
 
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run]\n  modernize <legacy.zip> [--run <analyzed run id>] [--only PROGRAM] [--attempts N]\n  delete-run <run id> [<run id>...]   (permanent)');
-  console.error('usage:\n  dockerize <legacy.zip>\n  run <image> [--stdin file] [-- cmd args...]\n  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run] [--translate]\n  translate [run id] [--zip legacy.zip] [--only NAME,NAME] [--concurrency N] [--dry-run]\n  delete-run <run id> [<run id>...]   (permanent)');
+  console.error(
+    [
+      'usage:',
+      '  dockerize <legacy.zip>',
+      '  run <image> [--stdin file] [-- cmd args...]',
+      '  analyze <legacy.zip> [--only NAME,NAME] [--concurrency N] [--dry-run] [--translate]',
+      '  translate [run id] [--zip legacy.zip] [--only NAME,NAME] [--concurrency N] [--dry-run]',
+      '  modernize <legacy.zip> [--run <analyzed run id>] [--only NAME,NAME] [--attempts N]',
+      '  delete-run <run id> [<run id>...]   (permanent)',
+    ].join('\n')
+  );
   return 2;
 }
 

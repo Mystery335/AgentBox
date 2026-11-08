@@ -8,7 +8,8 @@ describe('targetProfile', () => {
     assert.equal(targetProfile('Python 3.12').id, 'python');
     assert.equal(targetProfile('Java 21').id, 'java');
     assert.equal(targetProfile('C (C17)').id, 'c');
-    assert.equal(targetProfile('JavaScript').id, 'generic');
+    assert.equal(targetProfile('JavaScript').id, 'javascript');
+    assert.equal(targetProfile('Rust').id, 'python'); // no profile: falls back to Python so the code can still run
     assert.equal(targetProfile('Python 3.12').fileName('INTEREST'), 'interest.py');
     assert.equal(targetProfile('Java 21').fileName('ACCT-UPDATE'), 'AcctUpdate.java');
   });
@@ -77,5 +78,24 @@ describe('relevantShared', async () => {
     assert.doesNotMatch(out, /class TaxRec/);
     assert.match(out, /not used by this program: TAXREC/);
     assert.equal(relevantShared({ source: 'ALL' }, { includes: [] }), 'ALL');
+  });
+});
+
+describe('rule -> modern line ranges', async () => {
+  const { functionRange, ruleRanges, examplesBlock } = await import('../src/translator/agent.ts');
+  it('finds Python function ranges', () => {
+    const py = 'import sys\n\n\ndef br_01_fee(x):\n    """BR-01"""\n    return x\n\n\ndef main():\n    return 0\n';
+    assert.deepEqual(functionRange(py, 'br_01_fee'), { start: 4, end: 6 });
+    assert.deepEqual(ruleRanges(py, [{ rule_id: 'r:BR-01', function: 'br_01_fee' }, { rule_id: 'r:BR-02', function: 'missing' }]), [{ rule_id: 'r:BR-01', start_line: 4, end_line: 6 }]);
+  });
+  it('finds brace-language function ranges', () => {
+    const java = 'class A {\n  static int br03(int a) {\n    if (a > 0) { return a; }\n    return 0;\n  }\n}\n';
+    assert.deepEqual(functionRange(java, 'br03'), { start: 2, end: 5 });
+  });
+  it('shows legacy examples with visible spaces', () => {
+    const b = examplesBlock([{ input: 'A 1\nEND\n', expected: 'TOTAL    5\n[exit 4]' }]);
+    assert.ok(b.includes('stdin: "A 1\\nEND\\n"'), b);
+    assert.match(b, /"TOTAL    5"/);
+    assert.equal(examplesBlock([]), '');
   });
 });

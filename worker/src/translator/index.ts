@@ -14,7 +14,7 @@ import { ProjectView, type LlmStats } from '../analyzer/agent.ts';
 import { scanProject, type ScanResult } from '../analyzer/scan.ts';
 import type { AnalyzeResult } from '../analyzer/index.ts';
 import { ensureTargetImage, targetProfile } from './targets.ts';
-import { translateProgram, translateShared, type ProgramToTranslate, type RuleRef, type TranslationResult } from './agent.ts';
+import { translateProgram, translateShared, type Example, type ProgramToTranslate, type RuleRef, type TranslationResult } from './agent.ts';
 
 export const SHARED_COMPONENT = '(shared)/records';
 
@@ -32,6 +32,10 @@ export interface TranslateOptions {
   concurrency?: number;
   dryRun?: boolean;
   log?: (msg: string) => void;
+  /** Real legacy outputs per program path (Verifier debug cases), shown to the Translator. */
+  examples?: Map<string, Example[]>;
+  /** Leave the run in "translating" instead of "translated" (the Verifier continues right away). */
+  keepStatus?: boolean;
 }
 
 export interface TranslateRunResult {
@@ -170,7 +174,7 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
   await db.setRunStatus(runId, 'translating');
   const stopBeat = db.keepAlive(runId);
   try {
-    await event(`Translating ${programs.length} verifiable program(s) to ${ctx.targetLanguage}${profile.id === 'generic' ? ' (no static checker for this language)' : ''}`);
+    await event(`Translating ${programs.length} verifiable program(s) to ${ctx.targetLanguage}${profile.check ? '' : ' (no static checker for this language)'}`);
     const image = await ensureTargetImage(profile, ctx.targetRuntime);
     await event(`Target sandbox ready: ${image} (from ${ctx.targetRuntime || profile.defaultImage})`);
 
@@ -225,7 +229,8 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
               onReject: problem => void event(`${p.name}: answer rejected (${problem.split('\n')[0].slice(0, 160)}); fixing`),
             },
             p,
-            { fileName: profile.sharedFileName, source: shared.source, sections: shared.sections }
+            { fileName: profile.sharedFileName, source: shared.source, sections: shared.sections },
+            opts.examples?.get(p.path) ?? []
           );
         // If the normal attempt fails, retry once without Nemotron's reasoning
         // phase (shorter replies, no cut-offs) before giving up on the program.
@@ -260,7 +265,7 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
         `${all.reduce((n, l) => n + l.turns, 0)} model calls, ${tokens.toLocaleString('en-US')} tokens`
     );
     // Waiting status for the Verifier (the watchdog leaves it alone).
-    await db.setRunStatus(runId, 'translated');
+    if (!opts.keepStatus) await db.setRunStatus(runId, 'translated');
     return result;
   } finally {
     stopBeat();

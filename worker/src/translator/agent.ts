@@ -84,6 +84,74 @@ const MAX_FAILED_CHECKS = 4;
 const MAX_TOKENS = 12000;
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
+/** Real legacy behaviour on a test input (from the Verifier's debug cases, never holdout). */
+export interface Example {
+  input: string;
+  /** Canonical legacy output (stdout, plus "[exit N]" when the exit code isn't 0). */
+  expected: string;
+}
+
+/**
+ * Shows the Translator what the legacy program really prints for a few
+ * inputs, recorded by running it. Seeing exact output (spaces made visible by
+ * JSON quoting) prevents most formatting mismatches before the first test run.
+ */
+export function examplesBlock(examples: Example[]): string {
+  if (!examples.length) return '';
+  return [
+    'Real behaviour of the legacy program (recorded by running it). Your program must produce exactly this for these inputs. Strings are JSON-quoted so spaces are visible; "[exit N]" on the last line is the exit code.',
+    ...examples.map((e, i) => `Example ${i + 1}\nstdin: ${JSON.stringify(e.input)}\nstdout lines:\n${e.expected.split('\n').map(l => `  ${JSON.stringify(l)}`).join('\n')}`),
+  ].join('\n');
+}
+
+/**
+ * File line range of a function/method definition, for the dashboard's
+ * rule -> modern code highlighting. Python: from "def" to the line before the
+ * next top-level statement. Brace languages: from the signature to its
+ * closing brace. undefined when the function isn't found.
+ */
+export function functionRange(source: string, fn: string): { start: number; end: number } | undefined {
+  const name = fn.split('.').pop()!.replace(/\(.*$/, '').trim();
+  if (!/^[A-Za-z_]\w*$/.test(name)) return undefined;
+  const lines = source.split('\n');
+  const startIdx = lines.findIndex(l => new RegExp(String.raw`(\bdef\s+${name}\s*\(|\b${name}\s*\([^;]*\)\s*(throws\s+[\w.,\s]+)?\{?\s*$|\bfunction\s+${name}\b|\bfunc\s+${name}\b|\b${name}\s*=\s*(async\s*)?\()`).test(l));
+  if (startIdx < 0) return undefined;
+  const indent = (l: string) => l.length - l.trimStart().length;
+  const base = indent(lines[startIdx]);
+  let end = startIdx;
+  if (/\bdef\s/.test(lines[startIdx])) {
+    // Python: until the next non-blank line at the same or lower indentation.
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      if (lines[i].trim() === '') continue;
+      if (indent(lines[i]) <= base && !/^\s*[)\]}#]/.test(lines[i])) break;
+      end = i;
+    }
+  } else {
+    // Brace languages: count braces from the signature.
+    let depth = 0;
+    let opened = false;
+    for (let i = startIdx; i < lines.length; i++) {
+      for (const ch of lines[i].replace(/"(\\.|[^"\\])*"|'(\\.|[^'\\])*'|\/\/.*$/g, '')) {
+        if (ch === '{') {
+          depth++;
+          opened = true;
+        } else if (ch === '}') depth--;
+      }
+      end = i;
+      if (opened && depth <= 0) break;
+    }
+  }
+  return { start: startIdx + 1, end: end + 1 };
+}
+
+/** Rule -> modern line ranges from the rule -> function map (rules whose function isn't found are left out). */
+export function ruleRanges(source: string, ruleMap: { rule_id: string; function: string }[]): { rule_id: string; start_line: number; end_line: number }[] {
+  return ruleMap.flatMap(m => {
+    const r = functionRange(source, m.function);
+    return r ? [{ rule_id: m.rule_id, start_line: r.start, end_line: r.end }] : [];
+  });
+}
+
 /** Strips a ```lang fence if the model wrapped the code in one. */
 export function unfence(code: string): string {
   const m = code.match(/^\s*```[\w+-]*\n([\s\S]*?)\n```\s*$/);
@@ -450,7 +518,8 @@ export function relevantShared(shared: { source: string; sections?: Record<strin
 export async function translateProgram(
   env: TranslateEnv,
   p: ProgramToTranslate,
-  shared: { fileName: string; source: string; sections?: Record<string, string> }
+  shared: { fileName: string; source: string; sections?: Record<string, string> },
+  examples: Example[] = []
 ): Promise<TranslationResult> {
   const fileName = env.profile.fileName(p.name);
   const workDir = path.join(env.workRoot, p.name);
@@ -486,7 +555,8 @@ ${env.profile.conventions}
 
 ${WORKFLOW}`;
   const user = [
-    `Program: ${p.name} (${p.path}, ${p.lines} lines). Target file: ${fileName}. Run as: ${env.profile.runCommand(p.name)}`,
+    `Program: ${p.name} (${p.path}, ${p.lines} lines). Target file: ${fileName}. Run as: ${env.profile.run(fileName)}`,
+    examplesBlock(examples),
     `Analyzer summary: ${p.summary}`,
     `Inputs: ${JSON.stringify(p.inputs)}`,
     `Outputs: ${JSON.stringify(p.outputs)}`,
