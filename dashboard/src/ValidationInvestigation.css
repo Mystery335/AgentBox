@@ -1,0 +1,224 @@
+.ws-investigation .ws-project {
+  width: 770px;
+}
+.ws-investigation .ws-heading > .ws-badge {
+  width: 101.2px;
+}
+.vi-metrics {
+  height: 82px;
+  display: grid;
+  grid-template-columns: repeat(4, 286px);
+  gap: 12px;
+}
+.vi-metrics > div {
+  height: 82px;
+  padding: 18px;
+  border: 1px solid #4b5077;
+  border-radius: 18px;
+  background: #223662;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.vi-metrics strong {
+  font-size: 22px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.vi-metrics p {
+  font-size: 10px;
+  line-height: 1.45;
+}
+.vi-tabs button:nth-child(1) {
+  width: 78px;
+}
+.vi-tabs button:nth-child(2) {
+  width: 110px;
+}
+.vi-tabs button:nth-child(3) {
+  width: 94px;
+}
+.vi-tabs button:nth-child(4) {
+  width: 118px;
+}
+.vi-tabs button {
+  text-align: left;
+  padding-right: 0;
+}
+.vi-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.vi-filters {
+  display: flex;
+  gap: 14px;
+  height: 30px;
+  align-items: flex-start;
+  position: relative;
+  flex-shrink: 0;
+}
+.vi-filters h2 {
+  font-size: 14px;
+}
+.vi-filters button {
+  border: 0;
+  min-width: 64px;
+  text-align: left;
+}
+.vi-filters button:nth-of-type(2) {
+  min-width: 74.8px;
+}
+.vi-filters button:nth-of-type(3) {
+  min-width: 81.4px;
+}
+.vi-filters button:nth-of-type(4) {
+  min-width: 68.2px;
+}
+.vi-filters button:hover {
+  filter: brightness(1.2);
+}
+.vi-filters button[aria-pressed="true"] {
+  box-shadow: inset 0 -2px 0 #b9a5d2;
+}
+.vi-tests table {
+  position: relative;
+}
+.vi-tests td button[aria-pressed="true"] {
+  font-weight: 400;
+}
+.vi-tests td button:hover {
+  color: #ffccf2;
+}
+.vi-example-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  font-size: 9px;
+  color: #c9bbdc;
+  margin-top: auto;
+}
+.vi-evidence {
+  height: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vi-evidence-heading {
+  height: 30px;
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  flex-shrink: 0;
+}
+.vi-evidence-heading h2 {
+  font-size: 16px;
+}
+.vi-evidence-heading .ws-badge {
+  min-width: 64px;
+}
+.vi-evidence > p {
+  font-size: 12px;
+}
+.vi-outputs {
+  display: grid;
+  grid-template-columns: repeat(4, 275px);
+  gap: 14px;
+  height: 100px;
+}
+.vi-outputs > div {
+  height: 100px;
+  background: #0c142a;
+  border-radius: 18px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.vi-outputs h3 {
+  font-size: 9px;
+  color: #c9bbdc;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.vi-outputs strong {
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.vi-outputs p {
+  font-size: 10px;
+  color: #c9bbdc;
+  line-height: 1.45;
+}
+.vi-mismatch {
+  color: #ffa7ae;
+}
+.vi-history {
+  height: 162px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vi-history h2 {
+  font-size: 15px;
+}
+.vi-history p {
+  font-size: 12px;
+}
+.vi-latest-attempt {
+  font-weight: 600;
+}
+.vi-actions {
+  display: flex;
+  gap: 14px;
+  height: 37px;
+}
+.vi-actions .primary {
+  background: linear-gradient(90deg, #ffccf2, #977dff);
+  border-color: #b9a5d2;
+  font-size: 14px;
+}
+.vi-history > :not(.ws-trim),
+.vi-evidence > :not(.ws-trim) {
+  position: relative;
+}
+.vi-disclaimer {
+  font-size: 10px;
+}
+.vi-fix-dialog h2 {
+  font-size: 24px;
+}
+.vi-fix-dialog > .ws-badge {
+  background: #483821;
+  color: #f1cc8a;
+}
+.vi-fix-dialog > p {
+  font-size: 13px;
+  margin: 18px 0;
+}
+.vi-fix-code {
+  padding: 16px;
+  background: #0c142a;
+  border-radius: 8px;
+  margin: 20px 0;
+}
+.vi-fix-code p {
+  font-size: 11px;
+  margin: 0 0 8px;
+}
+.vi-fix-code pre {
+  font-family: "Roboto Mono", monospace;
+  font-size: 14px;
+  color: #ffccf2;
+  margin: 0 0 16px;
+}
+.vi-fix-code pre:last-child {
+  color: #d6f3b3;
+  margin-bottom: 0;
+}

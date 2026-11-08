@@ -1,3 +1,6 @@
+import ValidationInvestigation from "./ValidationInvestigation";
+import { validationTests as tests } from "./validationData";
+import Badge from "./components/StatusBadge";
 import AgentActivity from "./AgentActivity";
 import { activityEvents } from "./activityData";
 import { useRef, useState } from "react";
@@ -142,39 +145,6 @@ const rules = [
     ],
   },
 ];
-const tests = [
-  {
-    name: "Minimum age: 18",
-    rule: "BR-04",
-    output: "true → false",
-    result: "Failed",
-  },
-  {
-    name: "Required email",
-    rule: "BR-01",
-    output: "rejected → rejected",
-    result: "Passed",
-  },
-  {
-    name: "Duplicate registration ID",
-    rule: "BR-02",
-    output: "rejected → rejected",
-    result: "Passed",
-  },
-  {
-    name: "Max input length",
-    rule: "BR-03",
-    output: "accepted → accepted",
-    result: "Fixed",
-  },
-];
-function Badge({ text }: { text: string }) {
-  return (
-    <span className={`ws-badge ws-${text.toLowerCase().replaceAll(" ", "-")}`}>
-      {text}
-    </span>
-  );
-}
 function CodePane({ modern, lines }: { modern?: boolean; lines: string[] }) {
   return (
     <section
@@ -203,9 +173,11 @@ function CodePane({ modern, lines }: { modern?: boolean; lines: string[] }) {
 export default function Workspace({
   onNew,
   activity = false,
+  investigation = false,
 }: {
   onNew: () => void;
   activity?: boolean;
+  investigation?: boolean;
 }) {
   const [activityAgent, setActivityAgent] = useState(2);
   const [tab, setTab] = useState("Code & rules");
@@ -246,6 +218,7 @@ export default function Workspace({
             agents: stages,
             visibleEvidence: tests,
             ...(activity ? { timeline: activityEvents } : {}),
+            ...(investigation ? { investigation: tests } : {}),
           },
           null,
           2,
@@ -262,12 +235,15 @@ export default function Workspace({
   };
   const navigate = (next: string) => {
     setTab(next);
-    if (activity) window.location.hash = "/workspace";
+    window.location.hash =
+      next === "Validation" ? "/workspace/validation" : "/workspace";
     document.getElementById("ws-content")?.scrollIntoView({ block: "start" });
   };
   return (
     <div className="workspace-viewport">
-      <div className={`workspace-shell ${activity ? "ws-activity" : ""}`}>
+      <div
+        className={`workspace-shell ${activity ? "ws-activity" : ""} ${investigation ? "ws-investigation" : ""}`}
+      >
         <aside className="ws-sidebar">
           <a href="#" className="brand">
             ▣ AgentBox
@@ -276,7 +252,10 @@ export default function Workspace({
           <nav aria-label="Workspace navigation">
             <button
               className={
-                !activity && tab !== "Validation" && tab !== "Documentation"
+                !activity &&
+                !investigation &&
+                tab !== "Validation" &&
+                tab !== "Documentation"
                   ? "active"
                   : ""
               }
@@ -294,13 +273,18 @@ export default function Workspace({
               ◇ &nbsp;Agent activity
             </button>
             <button
-              className={!activity && tab === "Validation" ? "active" : ""}
+              className={investigation ? "active" : ""}
+              aria-current={investigation ? "page" : undefined}
               onClick={() => navigate("Validation")}
             >
               ✓ &nbsp;Validation
             </button>
             <button
-              className={!activity && tab === "Documentation" ? "active" : ""}
+              className={
+                !activity && !investigation && tab === "Documentation"
+                  ? "active"
+                  : ""
+              }
               onClick={() => navigate("Documentation")}
             >
               ▤ &nbsp;Documentation
@@ -328,66 +312,84 @@ export default function Workspace({
             <div className="ws-heading">
               <div className="ws-project">
                 <p>MODERNIZATION / RUN 0042</p>
-                <h1>{activity ? "Agent activity" : "Registration service"}</h1>
+                <h1>
+                  {activity
+                    ? "Agent activity"
+                    : investigation
+                      ? "Validation"
+                      : "Registration service"}
+                </h1>
                 <p>
                   {activity
                     ? "Run 0042   ·   Four specialized agents   ·   Example live state"
-                    : "C → Java 21   ·   Run 0042   ·   Example run data"}
+                    : investigation
+                      ? "Run 0042   ·   Same inputs, compared behavior   ·   Example run data"
+                      : "C → Java 21   ·   Run 0042   ·   Example run data"}
                 </p>
               </div>
               <Badge text={activity ? "Debugging" : "Needs review"} />
               <Button variant="neutral" size="small" onPress={exportReport}>
                 Export report
               </Button>
-              {!activity && (
+              {!activity && !investigation && (
                 <Button size="small" onPress={onNew}>
                   + New modernization
                 </Button>
               )}
             </div>
-            <div className="ws-stages">
-              {stages.map((stage, i) => (
-                <button
-                  className="ws-stage"
-                  key={stage.title}
-                  onClick={() =>
-                    activity ? setActivityAgent(i) : showAgent(i)
-                  }
-                >
-                  <img className="ws-trim" src={art("faa64")} alt="" />
-                  <div className="ws-stage-title">
-                    <h2>
-                      0{i + 1} &nbsp;{stage.title}
-                    </h2>
-                    <Badge text={stage.status} />
-                  </div>
-                  <p>{stage.detail}</p>
-                  <div
-                    className="ws-progress"
-                    role="progressbar"
-                    aria-label={`${stage.title} progress`}
-                    aria-valuenow={[100, 100, 64, 96][i]}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
+            {!investigation && (
+              <div className="ws-stages">
+                {stages.map((stage, i) => (
+                  <button
+                    className="ws-stage"
+                    key={stage.title}
+                    onClick={() =>
+                      activity ? setActivityAgent(i) : showAgent(i)
+                    }
                   >
-                    <img src={art(stage.progress)} alt="" />
-                  </div>
-                  <img
-                    className="ws-stage-icon"
-                    src={icon(stage.icon)}
-                    alt=""
-                  />
-                  {i === 2 && (
+                    <img className="ws-trim" src={art("faa64")} alt="" />
+                    <div className="ws-stage-title">
+                      <h2>
+                        0{i + 1} &nbsp;{stage.title}
+                      </h2>
+                      <Badge text={stage.status} />
+                    </div>
+                    <p>{stage.detail}</p>
+                    <div
+                      className="ws-progress"
+                      role="progressbar"
+                      aria-label={`${stage.title} progress`}
+                      aria-valuenow={[100, 100, 64, 96][i]}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    >
+                      <img src={art(stage.progress)} alt="" />
+                    </div>
                     <img
-                      className="ws-running-icon"
-                      src={icon("14845")}
+                      className="ws-stage-icon"
+                      src={icon(stage.icon)}
                       alt=""
                     />
-                  )}
-                </button>
-              ))}
-            </div>
-            {activity ? (
+                    {i === 2 && (
+                      <img
+                        className="ws-running-icon"
+                        src={icon("14845")}
+                        alt=""
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {investigation ? (
+              <ValidationInvestigation
+                onNavigate={navigate}
+                onInspect={(ruleId) => {
+                  setSelected(ruleId);
+                  navigate("Code & rules");
+                }}
+              />
+            ) : activity ? (
               <AgentActivity
                 selected={activityAgent}
                 onSelect={setActivityAgent}
@@ -424,7 +426,7 @@ export default function Workspace({
                       role="tab"
                       aria-selected={tab === name}
                       aria-controls="ws-tab-panel"
-                      onClick={() => setTab(name)}
+                      onClick={() => navigate(name)}
                     >
                       {name}
                     </button>
