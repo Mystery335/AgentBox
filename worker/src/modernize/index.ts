@@ -36,6 +36,21 @@ export interface ModernizeOptions {
   log?: (msg: string) => void;
   /** Reuse an already-built bundle (when called right after the Analyzer). */
   bundle?: LegacyBundle;
+  /** Programs prepared / verified at the same time (default 3). */
+  concurrency?: number;
+}
+
+async function pool<T, R>(items: T[], n: number, fn: (x: T, i: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(n, items.length)) }, worker));
+  return out;
 }
 
 export interface ProgramOutcome {
@@ -179,6 +194,17 @@ export async function modernizeRun(zipPath: string, runId: string, opts: Moderni
       }
     }
     if (!runnable.length) return finish(db, runId, target, outcomes, event);
+    const concurrency = Math.max(1, opts.concurrency ?? 3);
+
+    // 3a. Verifier, part 1: test design + legacy golden outputs. This needs
+    // only the legacy program, so it runs WHILE the Translator works.
+    const preparing = pool(runnable, concurrency, component =>
+      designTests({ db, bundle, component, ruleRows, projectDir, workDir, inventoryRoot: inventory.root, event }).catch(
+        (e): { reason: string } => ({ reason: `test preparation failed: ${e instanceof Error ? e.message.slice(0, 200) : e}` })
+      )
+    );
+    preparing.catch(() => {}); // awaited below; avoids an unhandled rejection if translation throws first
+
     const tctx = await contextFromDb(db, runId, zipPath);
     // The Translator only translates (write + compile check); behaviour is
     // the Verifier's job and fixes are the Debugger's. Pass `legacy` here to
@@ -186,34 +212,36 @@ export async function modernizeRun(zipPath: string, runId: string, opts: Moderni
     const translated = await translateRun(tctx, { only: runnable.map(c => c.name), keepStatus: true, log: say });
     const image = await ensureTargetImage(target, system?.target_runtime ?? '');
     const shared = translated.shared;
+    const designed = await preparing;
 
-    // 3. Verifier: designs its own tests per program (independent of the
-    // Translator), records the legacy outputs, compares; 4. Debugger fixes
-    // failures from DEBUG cases only; then a shadow re-run.
+    // Record test cases in program order (stable test indexes).
     await db.setRunStatus(runId, 'verifying');
     let index = 0;
-    let first = true;
-    for (const component of runnable) {
+    const ready: { p: PreparedProgram; tr: { result: TranslationResult; fileName: string } }[] = [];
+    for (const [i, component] of runnable.entries()) {
       const tr = translated.programs.find(x => x.path === component.path);
       if (!tr?.result) {
         outcomes.push(failedOutcome(component, target, `translation failed: ${tr?.error ?? 'no result'}`));
         continue;
       }
-      if (component.file_io.length) {
-        await event('verifier', `${component.name} also uses files (${component.file_io.map(f => f.name).join(', ')}); this proof covers its stdin/stdout behaviour only.`);
-      }
-      const p = await prepareProgram({ db, runId, bundle, component, ruleRows, projectDir, workDir, inventoryRoot: inventory.root, event, firstIndex: index });
-      if ('reason' in p) {
-        outcomes.push(failedOutcome(component, target, p.reason));
-        await event('verifier', `${component.name}: could not be verified (${p.reason})`);
+      const d = designed[i];
+      if ('reason' in d) {
+        outcomes.push(failedOutcome(component, target, d.reason));
+        await event('verifier', `${component.name}: could not be verified (${d.reason})`);
         continue;
       }
+      const p = await recordCases(db, runId, d, index, event);
       index += p.cases.length;
-      outcomes.push(
-        await verifyProgram({ db, runId, p, target, image, shared: shared!, translation: tr.result, file: tr.fileName, maxAttempts, event, workDir, primary: first })
-      );
-      first = false;
+      ready.push({ p, tr: { result: tr.result, fileName: tr.fileName } });
     }
+
+    // 3b. Verifier part 2 + 4. Debugger + shadow, several programs at once.
+    const primaryPath = ready[0]?.p.component.path;
+    outcomes.push(
+      ...(await pool(ready, concurrency, ({ p, tr }) =>
+        verifyProgram({ db, runId, p, target, image, shared: shared!, translation: tr.result, file: tr.fileName, maxAttempts, event, workDir, primary: p.component.path === primaryPath })
+      ))
+    );
     return finish(db, runId, target, outcomes, event);
   } finally {
     stopBeat();
@@ -224,10 +252,16 @@ function failedOutcome(c: StoredComponent, target: TargetProfile, reason: string
   return { name: c.name, path: c.path, file: target.fileName(c.name), status: 'failed', attempts: 0, debugPassed: 0, debugTotal: 0, holdoutPassed: 0, holdoutTotal: 0, reason };
 }
 
-/** Designs tests for one program and records the legacy program's outputs. */
-async function prepareProgram(a: {
+interface DesignedTests {
+  component: StoredComponent;
+  ctx: LegacyContext;
+  legacyBuild: string;
+  cases: { tc: GeneratedCase; input: string; expected: string }[];
+}
+
+/** Designs tests for one program and runs the legacy program on them (no DB writes besides events). */
+async function designTests(a: {
   db: Stdb;
-  runId: string;
   bundle: LegacyBundle;
   component: StoredComponent;
   ruleRows: (RuleRow & Row)[];
@@ -235,9 +269,11 @@ async function prepareProgram(a: {
   workDir: string;
   inventoryRoot: string;
   event: Event;
-  firstIndex: number;
-}): Promise<PreparedProgram | { reason: string }> {
-  const { db, runId, component, event } = a;
+}): Promise<DesignedTests | { reason: string }> {
+  const { db, component, event } = a;
+  if (component.file_io.length) {
+    await event('verifier', `${component.name} also uses files (${component.file_io.map(f => f.name).join(', ')}); this proof covers its stdin/stdout behaviour only.`);
+  }
   const rules = a.ruleRows.filter(r => component.rule_ids.includes(String(r.id)));
   const ctx = await loadLegacyContext(a.projectDir, component, rules);
   await event('verifier', `${component.name}: designing test inputs from ${rules.length} business rules`);
@@ -264,10 +300,11 @@ async function prepareProgram(a: {
     mounts: [{ host: a.bundle.extractDir, container: LEGACY_DIR }],
     cases: inputs,
     cwd: `${LEGACY_DIR}/${a.inventoryRoot}`,
+    parallel: component.file_io.length ? 1 : undefined,
   });
   if (!legacy.built) return { reason: `the legacy program did not build in its image: ${legacy.buildLog.slice(0, 300)}` };
 
-  const cases: PreparedProgram['cases'] = [];
+  const cases: DesignedTests['cases'] = [];
   let dropped = 0;
   for (const [i, inp] of inputs.entries()) {
     const r = legacy.cases.get(inp.id);
@@ -275,24 +312,29 @@ async function prepareProgram(a: {
       dropped++;
       continue;
     }
-    cases.push({
-      id: `${runId}:${component.name}:tc-${inp.id}`,
-      index: a.firstIndex + cases.length + 1,
-      tc: gen[i],
-      input: inp.stdin,
-      expected: canonical(r.stdout, r.exitCode),
-      split: splitOf(cases.length),
-    });
+    cases.push({ tc: gen[i], input: inp.stdin, expected: canonical(r.stdout, r.exitCode) });
   }
   if (dropped) await event('verifier', `${component.name}: dropped ${dropped} input(s) where the legacy program hung (no reproducible output)`);
   if (cases.length < 4) return { reason: `only ${cases.length} usable test cases` };
+  return { component, ctx, legacyBuild, cases };
+}
+
+/** Gives designed tests their ids, indexes and debug/holdout split, and stores them. */
+async function recordCases(db: Stdb, runId: string, d: DesignedTests, firstIndex: number, event: Event): Promise<PreparedProgram> {
+  const { component } = d;
+  const cases: PreparedProgram['cases'] = d.cases.map((c, i) => ({
+    ...c,
+    id: `${runId}:${component.name}:tc-${String(i + 1).padStart(2, '0')}`,
+    index: firstIndex + i + 1,
+    split: splitOf(i),
+  }));
   await db.addTestCases(
     runId,
     cases.map(c => ({ id: c.id, test_index: c.index, split: c.split, kind: c.tc.kind, origin: 'generated', rule_id: c.tc.rule_id, input: c.input, legacy_output: c.expected }))
   );
   const holdout = cases.filter(c => c.split === 'holdout').length;
   await event('verifier', `${component.name}: recorded ${cases.length} golden outputs from the legacy program: ${cases.length - holdout} debug, ${holdout} holdout (the Debugger never sees holdout cases)`);
-  const p = { component, ctx, legacyBuild, cases };
+  const p = { component, ctx: d.ctx, legacyBuild: d.legacyBuild, cases };
   await reportVerification(db, runId, p, undefined, { status: 'running', reason: '' });
   return p;
 }

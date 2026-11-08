@@ -47,6 +47,11 @@ export interface BatchSpec {
   perCaseSeconds?: number;
   /** Working directory inside the container for build and run. */
   cwd?: string;
+  /**
+   * How many cases run at once inside the container (default 4). Use 1 for
+   * programs that write files, so parallel cases can't clobber each other.
+   */
+  parallel?: number;
 }
 
 /** Exit code `timeout` uses when it kills a case. */
@@ -60,7 +65,11 @@ export async function runBatch(spec: BatchSpec): Promise<BatchResult> {
 
   const n = `AP${randomBytes(6).toString('hex')}`;
   const per = spec.perCaseSeconds ?? 10;
+  const lanes = Math.max(1, Math.min(spec.parallel ?? 4, spec.cases.length || 1));
   const cd = spec.cwd ? `cd '${spec.cwd.replace(/'/g, `'\\''`)}' || exit 3` : 'cd /tmp';
+  // The cases are split into `lanes` groups that run side by side (each group
+  // one case at a time, each case with its own time limit); results go to
+  // /tmp/ap_res and are printed in case order afterwards.
   const script = [
     'set -u',
     cd,
@@ -68,20 +77,36 @@ export async function runBatch(spec: BatchSpec): Promise<BatchResult> {
       ? `if ! ( ${spec.build} ) > /tmp/ap_build.log 2>&1; then printf '%s BUILD_FAIL\\n' '${n}'; head -c 4000 /tmp/ap_build.log; exit 0; fi`
       : ':',
     `printf '%s BUILD_OK\\n' '${n}'`,
+    'mkdir -p /tmp/ap_res',
+    'ap_lane() {',
+    '  i=0',
+    '  for f in /cases/*.in; do',
+    '    [ -e "$f" ] || continue',
+    `    if [ $((i % ${lanes})) -eq "$1" ]; then`,
+    '      id=$(basename "$f" .in)',
+    `      timeout ${per} sh -c '${spec.run.replace(/'/g, `'\\''`)}' < "$f" > "/tmp/ap_res/$id.out" 2> "/tmp/ap_res/$id.err"`,
+    '      echo $? > "/tmp/ap_res/$id.rc"',
+    '    fi',
+    '    i=$((i + 1))',
+    '  done',
+    '}',
+    'k=0',
+    `while [ "$k" -lt ${lanes} ]; do ap_lane "$k" < /dev/null & k=$((k + 1)); done`,
+    'wait',
     'for f in /cases/*.in; do',
     '  [ -e "$f" ] || continue',
     '  id=$(basename "$f" .in)',
+    '  [ -e "/tmp/ap_res/$id.rc" ] || continue',
     `  printf '%s CASE %s\\n' '${n}' "$id"`,
-    `  timeout ${per} sh -c '${spec.run.replace(/'/g, `'\\''`)}' < "$f" 2> /tmp/ap_err.txt`,
-    '  rc=$?',
-    `  printf '\\n%s EXIT %s %s\\n' '${n}' "$id" "$rc"`,
-    '  head -c 2000 /tmp/ap_err.txt',
+    '  cat "/tmp/ap_res/$id.out"',
+    `  printf '\\n%s EXIT %s %s\\n' '${n}' "$id" "$(cat "/tmp/ap_res/$id.rc")"`,
+    '  head -c 2000 "/tmp/ap_res/$id.err"',
     `  printf '\\n%s ENDERR %s\\n' '${n}' "$id"`,
     'done',
     `printf '%s DONE\\n' '${n}'`,
   ].join('\n');
 
-  const total = 60 + spec.cases.length * (per + 2);
+  const total = 60 + Math.ceil(spec.cases.length / lanes) * (per + 2);
   const r = await runLocked(spec.image, ['sh', '-s'], {
     stdin: script + '\n',
     timeoutMs: total * 1000,
