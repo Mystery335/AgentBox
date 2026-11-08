@@ -94,10 +94,23 @@ function commonRoot(files: string[]): string {
   return n ? parts.slice(0, n).join('/') + '/' : '';
 }
 
-/** Area = first meaningful folder below the root, skipping generic ones like src/programs. */
-function areaOf(rel: string): string {
-  const dirs = rel.split('/').slice(0, -1).filter(d => !/^(src|source|programs?|cobol|cbl|code|lib)$/i.test(d));
-  return dirs[0] ?? '';
+/**
+ * Area = first meaningful folder below the folders that ALL programs share,
+ * skipping generic ones like src/programs. E.g. COBOL-BANKING/payroll/src/X
+ * -> "payroll", COBOL-BANKING/src/Y -> "core" (nothing meaningful left).
+ */
+function areaOf(rel: string, shared: number): string {
+  const dirs = rel.split('/').slice(shared, -1).filter(d => !/^(src|source|programs?|cobol|cbl|code|lib)$/i.test(d));
+  return dirs[0] ?? 'core';
+}
+
+/** Number of leading folders every path has in common. */
+function sharedDepth(paths: string[]): number {
+  if (paths.length < 2) return 0;
+  const split = paths.map(p => p.split('/').slice(0, -1));
+  let n = 0;
+  while (split.every(s => s.length > n && s[n] === split[0][n])) n++;
+  return n;
 }
 
 export async function scanProject(extractDir: string, files: string[]): Promise<ScanResult> {
@@ -123,6 +136,7 @@ export async function scanProject(extractDir: string, files: string[]): Promise<
   }
 
   const components: Component[] = [];
+  const shared = sharedDepth(inventory.filter(f => f.kind === 'source' && f.language).map(f => f.path));
   for (const f of inventory) {
     if (f.kind !== 'source' || !f.language) continue;
     const p = profile(f.language)!;
@@ -132,7 +146,7 @@ export async function scanProject(extractDir: string, files: string[]): Promise<
       path: f.path,
       language: f.language,
       name: (facts.programId ?? baseNoExt(f.path)).toUpperCase(),
-      area: areaOf(f.path),
+      area: areaOf(f.path, shared),
       lines: f.lines,
       codeLines: text.split(/\r?\n/).filter(l => l.trim() !== '').length,
       role: TEMPLATE_PATH.test(f.path) ? 'template' : 'program',

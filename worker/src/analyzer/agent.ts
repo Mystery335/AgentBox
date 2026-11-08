@@ -243,26 +243,62 @@ export function normalizeComponent(a: Record<string, unknown>): Record<string, u
   for (const k of ['inputs', 'outputs', 'data_layouts', 'risks', 'business_rules']) out[k] = list(a[k]);
   out.risks = (out.risks as unknown[]).map(r => (typeof r === 'string' ? r : JSON.stringify(r)));
   out.modernization_notes = typeof a.modernization_notes === 'string' ? a.modernization_notes : '';
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
   out.business_rules = (out.business_rules as Record<string, unknown>[]).map(r => {
     if (!r || typeof r !== 'object') return r;
     let s = Number(r.start_line);
     let e = Number(r.end_line);
     if (Number.isInteger(s) && Number.isInteger(e) && e < s) [s, e] = [e, s];
+    // Missing disposition = normal behaviour; the model only omits it for ordinary rules.
+    const disposition = text(r.disposition) ? text(r.disposition).toLowerCase().replace(/[\s-]+/g, '_') : 'keep';
+    const when = text(r.when) || text(r.when_);
+    const then = text(r.then) || text(r.then_);
     return {
       ...r,
+      title: text(r.title) || text(r.name) || (when ? when.slice(0, 80) : ''),
+      when,
+      then,
       start_line: s,
       end_line: e,
-      disposition: typeof r.disposition === 'string' ? r.disposition.toLowerCase().replace(/[\s-]+/g, '_') : r.disposition,
-      disposition_reason: typeof r.disposition_reason === 'string' && r.disposition_reason.trim() ? r.disposition_reason : r.disposition === 'keep' ? 'Normal program behaviour.' : r.disposition_reason,
+      disposition,
+      disposition_reason:
+        text(r.disposition_reason) ||
+        (disposition === 'keep' ? 'Normal program behaviour.' : disposition === 'review' ? 'Flagged for human review by the Analyzer.' : 'Looks unused or test-only.'),
     };
   });
+  // A rule without its condition or result can't be tested. Drop it rather
+  // than rejecting the whole answer, as long as complete rules remain.
+  const rules = out.business_rules as Record<string, unknown>[];
+  const complete = rules.filter(r => r && typeof r === 'object' && text(r.when) && text(r.then) && text(r.title));
+  if (complete.length > 0 && complete.length < rules.length) {
+    out.business_rules = complete.map(r => ({ ...r, given: text(r.given) || 'Any input' }));
+    (out.risks as string[]).push(`${rules.length - complete.length} incomplete rule(s) were dropped by validation`);
+  }
   return out;
 }
 
-export function validateComponent(a: Record<string, unknown>, lines: number): string | undefined {
+/** Same idea for the system answer: lists sent as plain text become lists. */
+export function normalizeSystem(a: Record<string, unknown>): Record<string, unknown> {
+  const list = (v: unknown) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
+  const out: Record<string, unknown> = { ...a };
+  for (const k of ['target_reasons', 'alternatives', 'first_slice', 'migration_order', 'risks']) out[k] = list(a[k]);
+  for (const k of ['overview', 'architecture', 'first_slice_reason', 'existing_tests']) out[k] = typeof a[k] === 'string' ? a[k] : '';
+  out.target_reasons = (out.target_reasons as unknown[]).map(String);
+  out.risks = (out.risks as unknown[]).map(r => (typeof r === 'string' ? r : JSON.stringify(r)));
+  out.alternatives = (out.alternatives as unknown[]).filter(x => x && typeof x === 'object');
+  out.migration_order = (out.migration_order as Record<string, unknown>[])
+    .filter(x => x && typeof x === 'object')
+    .map((m, i) => ({ step: Number(m.step) || i + 1, components: list(m.components).map(String), note: typeof m.note === 'string' ? m.note : '' }));
+  return out;
+}
+
+export function validateComponent(a: Record<string, unknown>, lines: number, requireRules = false): string | undefined {
   if (typeof a.summary !== 'string' || a.summary.trim().length < 20) return 'summary must be 2-4 sentences';
   const rules = a.business_rules;
   if (!Array.isArray(rules)) return 'business_rules must be an array';
+  if (requireRules && rules.length === 0) {
+    return 'business_rules is empty, but this program has code: list the concrete behaviours it implements (calculations, validations, branches, outputs)';
+  }
   for (const [i, r] of (rules as Record<string, unknown>[]).entries()) {
     for (const k of ['title', 'given', 'when', 'then', 'disposition_reason']) {
       if (typeof r[k] !== 'string' || !(r[k] as string).trim()) return `business_rules[${i}].${k} is missing`;
@@ -299,7 +335,7 @@ export async function analyzeComponent(
     handle: (name, args) => handleProjectTool(view, name, args),
     finalTool: SUBMIT_COMPONENT.name,
     normalize: normalizeComponent,
-    validate: a => validateComponent(a, c.lines),
+    validate: a => validateComponent(a, c.lines, c.codeLines > 0),
     maxTurns: 16,
     onToolCall,
     onReject,
@@ -377,6 +413,8 @@ export async function analyzeSystem(
     tools: [...PROJECT_TOOLS, SUBMIT_SYSTEM],
     handle: (name, args) => handleProjectTool(view, name, args),
     finalTool: SUBMIT_SYSTEM.name,
+    normalize: normalizeSystem,
+    maxTurns: 8,
     validate: a => {
       if (typeof a.target_language !== 'string' || !a.target_language.trim()) return 'target_language is required';
       if (typeof a.target_runtime !== 'string' || !a.target_runtime.trim()) return 'target_runtime is required';

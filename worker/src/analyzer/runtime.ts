@@ -34,6 +34,23 @@ export function generateDockerfile(languageIds: string[]): { dockerfile: string;
   return { dockerfile: lines.join('\n'), runtime };
 }
 
+/**
+ * Picks the most telling compile error among the variants tried. A variant in
+ * the wrong source format fails at line 1 or inside an include; the right one
+ * gets further into the program. So prefer errors in the program file itself,
+ * then the highest line number.
+ */
+export function pickError(file: string, errs: string[]): string {
+  if (errs.length === 0) return 'unknown error';
+  const base = file.split('/').pop()!;
+  const score = (e: string) => {
+    const m = e.match(/([^\s:]+):(\d+):/);
+    const inFile = m ? m[1].endsWith(base) : false;
+    return (inFile ? 1_000_000 : 0) + (m ? Number(m[2]) : 0);
+  };
+  return errs.reduce((best, e) => (score(e) > score(best) ? e : best), errs[0]);
+}
+
 /** Languages to install, by source lines (only ones we have a runtime for). */
 export function detectLanguages(inventory: InventoryFile[]): string[] {
   const lines = new Map<string, number>();
@@ -61,22 +78,21 @@ export async function probeCompile(
   const results = new Map<string, CompileResult>();
   const abs = (rel: string) => `${LEGACY_DIR}/${root}${rel}`;
   const script: string[] = [
-    // check <file> <cmd>...: prints OK/FAIL/NOTOOL with the winning command,
-    // or the FIRST real error (later variants are fallbacks, e.g. free format,
-    // and their errors are usually less meaningful).
+    // check <file> <cmd>...: prints OK with the winning command; otherwise one
+    // ERR line per failing variant (its first error), then FAIL, or NOTOOL if
+    // no compiler was found. TypeScript picks the most telling error.
     'check() {',
-    '  f="$1"; shift; real=""; tool=""',
+    '  f="$1"; shift; real=0; tool=""',
     '  for c in "$@"; do',
     '    out=$(eval "$c" 2>&1); rc=$?',
     '    if [ $rc -eq 0 ]; then printf "OK\\t%s\\t%s\\n" "$f" "$c"; return; fi',
-    '    if [ $rc -eq 127 ]; then tool="$out"; elif [ -z "$real" ]; then real="$out"; fi',
+    '    if [ $rc -eq 127 ]; then tool="$out"; continue; fi',
+    '    real=1',
+    '    err=$(printf "%s\\n" "$out" | grep -i -m1 "error" || printf "%s\\n" "$out" | head -n1)',
+    '    printf "ERR\\t%s\\t%s\\n" "$f" "$err"',
     '  done',
-    '  if [ -n "$real" ]; then',
-    '    err=$(printf "%s\\n" "$real" | grep -i -m1 "error" || printf "%s\\n" "$real" | head -n1)',
-    '    printf "FAIL\\t%s\\t%s\\n" "$f" "$err"',
-    '  else',
-    '    printf "NOTOOL\\t%s\\t%s\\n" "$f" "$(printf "%s\\n" "$tool" | head -n1)"',
-    '  fi',
+    '  if [ $real -eq 1 ]; then printf "FAIL\\t%s\\t\\n" "$f"',
+    '  else printf "NOTOOL\\t%s\\t%s\\n" "$f" "$(printf "%s\\n" "$tool" | head -n1)"; fi',
     '}',
   ];
 
@@ -101,12 +117,14 @@ export async function probeCompile(
   if (r.timedOut) throw new Error('compile probe timed out');
 
   const prefix = `${LEGACY_DIR}/${root}`;
+  const errors = new Map<string, string[]>();
   for (const line of r.stdout.split('\n')) {
     const [status, file, detail = ''] = line.split('\t');
     if (!file) continue;
     const clean = detail.split(prefix).join('').trim().slice(0, 300);
     if (status === 'OK') results.set(file, { status: 'ok', command: clean });
-    else if (status === 'FAIL') results.set(file, { status: 'failed', error: clean });
+    else if (status === 'ERR') errors.set(file, [...(errors.get(file) ?? []), clean]);
+    else if (status === 'FAIL') results.set(file, { status: 'failed', error: pickError(file, errors.get(file) ?? []) });
     else if (status === 'NOTOOL') results.set(file, { status: 'unavailable', error: clean || 'compiler not installed in the image' });
   }
   for (const c of components) {

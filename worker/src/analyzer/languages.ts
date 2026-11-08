@@ -108,10 +108,12 @@ const cobol: LanguageProfile = {
     name: 'GnuCOBOL 3.1.2 (Debian bookworm gnucobol3)',
     install: ['RUN apt-get update && apt-get install -y --no-install-recommends gnucobol3 && rm -rf /var/lib/apt/lists/*'],
     includeFlag: '-I',
-    // Default dialect first, then IBM dialect with relaxed checks, then free format.
+    // Fixed format (default dialect, then IBM relaxed), then free format
+    // (default dialect, then IBM relaxed). The first that passes is recorded.
     syntaxCheck: [
       'cobc -fsyntax-only {includes} {file}',
       'cobc -fsyntax-only -std=ibm -frelax-syntax-checks {includes} {file}',
+      'cobc -fsyntax-only -free {includes} {file}',
       'cobc -fsyntax-only -free -std=ibm -frelax-syntax-checks {includes} {file}',
     ],
   },
@@ -200,6 +202,7 @@ export type FileKind =
   | 'build'
   | 'test-data'
   | 'documentation'
+  | 'modern-code'
   | 'binary'
   | 'other';
 
@@ -213,6 +216,16 @@ const KIND_BY_EXT: Record<string, FileKind> = {
   '.png': 'binary', '.jpg': 'binary', '.gif': 'binary', '.zip': 'binary', '.exe': 'binary', '.o': 'binary', '.so': 'binary',
 };
 const BUILD_NAMES = new Set(['makefile', 'dockerfile', 'containerfile', 'build.sh', 'cmakelists.txt', 'build.xml', 'pom.xml']);
+/**
+ * Modern code, scripts and config that can sit next to the legacy code (a web
+ * app, CI, tooling). Never sniffed as a legacy language: a Python file that
+ * generates COBOL contains "PIC X(10)" but is not a COBOL program.
+ */
+const MODERN_EXT = new Set([
+  '.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.java', '.kt', '.cs', '.go', '.rs', '.rb', '.php',
+  '.sh', '.bash', '.ps1', '.bat', '.cmd', '.css', '.scss', '.html', '.htm', '.json', '.yml', '.yaml', '.toml',
+  '.ini', '.cfg', '.xml', '.lock', '.svg', '.webm', '.mp4', '.ipynb',
+]);
 
 export function extOf(path: string): string {
   const base = path.split('/').pop() ?? path;
@@ -232,6 +245,7 @@ export function classify(path: string, text: string | null): { kind: FileKind; l
       return { kind: 'include', language: p.id };
     }
   }
+  if (MODERN_EXT.has(ext)) return { kind: 'modern-code' };
   if (KIND_BY_EXT[ext]) {
     const kind = KIND_BY_EXT[ext];
     // Text files under a test folder are test data, not docs.

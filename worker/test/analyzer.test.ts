@@ -5,6 +5,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { classify, cobolCodeLines, profile } from '../src/analyzer/languages.ts';
 import { decideVerifiability, scanProject } from '../src/analyzer/scan.ts';
+import * as runtimeMod from '../src/analyzer/runtime.ts';
 import { detectLanguages, generateDockerfile, shq } from '../src/analyzer/runtime.ts';
 import { validateComponent } from '../src/analyzer/agent.ts';
 
@@ -36,6 +37,9 @@ describe('languages', () => {
     assert.deepEqual(classify('PAYCALC', COBOL), { kind: 'source', language: 'cobol' }); // no extension: sniffed
     assert.deepEqual(classify('logo.png', null), { kind: 'binary' });
     assert.deepEqual(classify('src/tests/case1.txt', 'x'), { kind: 'test-data' });
+    // Modern code next to the legacy code is never sniffed as COBOL, even when it contains COBOL text.
+    assert.deepEqual(classify('python/cobol_codegen/gen.py', 'out = "       05 X PIC X(10)."'), { kind: 'modern-code' });
+    assert.deepEqual(classify('COBOL-BANKING/scripts/build.sh', 'cobc -x'), { kind: 'build' });
   });
 
   it('ignores COBOL comment lines, incl. banners shifted one column', () => {
@@ -86,6 +90,7 @@ describe('scanProject + decideVerifiability', async () => {
     assert.deepEqual(by('PAYCALC').calls, [{ name: 'HELPER', file: 'src/programs/batch/HELPER.cbl' }, { name: 'ILBOABN0' }]);
     assert.deepEqual(by('PAYCALC').jobs, ['jcl/PAY.jcl']);
     assert.equal(by('PAYCALC').area, 'batch');
+    assert.equal(by('SKEL').area, 'templates');
     assert.deepEqual(s.tables, [{ name: 'PAY_HIST', file: 'sql/t.sql' }]);
     assert.deepEqual(detectLanguages(s.inventory), ['cobol']);
   });
@@ -121,6 +126,13 @@ describe('runtime', () => {
     assert.match(g.dockerfile, /^COPY \. \/legacy$/m);
     assert.match(g.runtime, /GnuCOBOL.*GCC/);
   });
+  it('picks the compile error that got furthest into the program', () => {
+    const { pickError } = runtimeMod;
+    assert.equal(
+      pickError('payroll/src/RISKCHK.cob', ['payroll/copybooks/MERCHREC.cpy:1: error: invalid indicator', 'payroll/src/RISKCHK.cob:212: error: unknown device']),
+      'payroll/src/RISKCHK.cob:212: error: unknown device'
+    );
+  });
   it('quotes for sh', () => {
     assert.equal(shq("a'b c"), `'a'\\''b c'`);
   });
@@ -130,6 +142,10 @@ describe('validateComponent', () => {
   const rule = { title: 't', given: 'g', when: 'w', then: 'x', start_line: 2, end_line: 3, disposition: 'keep', disposition_reason: 'r' };
   const base = { summary: 'Does a thing for the business, clearly.', inputs: [], outputs: [], data_layouts: [], risks: [], modernization_notes: '' };
   it('accepts a valid answer', () => assert.equal(validateComponent({ ...base, business_rules: [rule] }, 10), undefined));
+  it('requires rules for a program with code', () => {
+    assert.match(validateComponent({ ...base, business_rules: [] }, 10, true)!, /business_rules is empty/);
+    assert.equal(validateComponent({ ...base, business_rules: [] }, 10, false), undefined);
+  });
   it('rejects bad line ranges and dispositions', () => {
     assert.match(validateComponent({ ...base, business_rules: [{ ...rule, end_line: 99 }] }, 10)!, /invalid; the file has 10 lines/);
     assert.match(validateComponent({ ...base, business_rules: [{ ...rule, disposition: 'maybe' }] }, 10)!, /disposition/);
@@ -153,5 +169,27 @@ describe('answer repair', async () => {
     assert.equal(r.start_line, 4);
     assert.equal(r.end_line, 9);
     assert.equal(r.disposition, 'drop_candidate');
+  });
+  it('drops incomplete rules when complete ones remain', () => {
+    const ok = { title: 't', given: 'g', when: 'w', then: 'x', start_line: 1, end_line: 2 };
+    const n = normalizeComponent({ risks: [], business_rules: [ok, { title: 'u', when: 'w', start_line: 1, end_line: 2 }] });
+    assert.equal((n.business_rules as unknown[]).length, 1);
+    assert.match((n.risks as string[]).join(), /1 incomplete rule/);
+  });
+  it('normalizes a system answer with text instead of lists', async () => {
+    const { normalizeSystem } = await import('../src/analyzer/agent.ts');
+    const n = normalizeSystem({ risks: 'one risk', target_reasons: 'exact decimals', migration_order: [{ components: 'A.cob', note: 'n' }] });
+    assert.deepEqual(n.risks, ['one risk']);
+    assert.deepEqual(n.target_reasons, ['exact decimals']);
+    assert.deepEqual(n.migration_order, [{ step: 1, components: ['A.cob'], note: 'n' }]);
+    assert.deepEqual(n.first_slice, []);
+  });
+  it('defaults a missing disposition to keep, with a reason', () => {
+    const n = normalizeComponent({ business_rules: [{ title: 't', given: 'g', when_: 'w', then_: 'x', start_line: 1, end_line: 2 }] });
+    const r = (n.business_rules as Record<string, unknown>[])[0];
+    assert.equal(r.disposition, 'keep');
+    assert.equal(r.disposition_reason, 'Normal program behaviour.');
+    assert.equal(r.when, 'w');
+    assert.equal(r.then, 'x');
   });
 });
