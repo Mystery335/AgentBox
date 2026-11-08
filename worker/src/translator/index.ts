@@ -79,11 +79,19 @@ export function contextFromAnalysis(a: AnalyzeResult): TranslateContext {
         includes: x.c.includes,
         fileIO: x.c.facts.fileIO,
         takesParameters: x.c.facts.takesParameters,
-        rules: x.a!.business_rules.map((r, i) => ({ id: x.ruleIds[i], title: r.title, given: r.given, when: r.when, then: r.then, start: r.start_line, end: r.end_line })).filter(r => r.id),
+        rules: x.a!.business_rules
+          .map((r, i) => ({
+            id: x.ruleIds[i], title: r.title, given: r.given, when: r.when, then: r.then, start: r.start_line, end: r.end_line,
+            disposition: r.disposition, dispositionReason: r.disposition_reason,
+          }))
+          .filter(r => r.id),
         summary: x.a!.summary,
         inputs: x.a!.inputs,
         outputs: x.a!.outputs,
         risks: x.a!.risks,
+        dataLayouts: x.a!.data_layouts,
+        modernizationNotes: x.a!.modernization_notes,
+        system: { targetReasons: a.system!.target_reasons ?? [], architecture: a.system!.architecture ?? '' },
       })),
   };
 }
@@ -117,13 +125,17 @@ export async function contextFromDb(db: Stdb, runId?: string, zip?: string): Pro
   const rows = await db.sql(`SELECT * FROM analysis WHERE run_id = '${id}'`);
   const system = rows.find(r => r.kind === 'system');
   if (!system) throw new Error(`run ${id} has no target-language decision (system analysis missing)`);
-  const sys = parse<{ target_language: string; target_runtime: string }>(system.json);
+  const sys = parse<{ target_language: string; target_runtime: string; target_reasons?: string[]; architecture?: string }>(system.json);
   const rules = new Map((await db.sql(`SELECT * FROM rule WHERE run_id = '${id}'`)).map(r => [String(r.id), r]));
 
   type Comp = {
     name: string; path: string; lines: number; verifiable: boolean; includes: { name: string; file?: string }[];
     file_io: { name: string; assign: string; organization?: string }[]; takes_parameters: boolean; rule_ids: string[];
-    analysis?: { summary: string; inputs: { name: string; description: string }[]; outputs: { name: string; description: string }[]; risks: string[] };
+    analysis?: {
+      summary: string; inputs: { name: string; description: string }[]; outputs: { name: string; description: string }[]; risks: string[];
+      data_layouts?: { name: string; defined_in: string; description: string }[]; modernization_notes?: string;
+      business_rules?: { disposition_reason?: string }[];
+    };
   };
   const programs = rows
     .filter(r => r.kind === 'component')
@@ -136,14 +148,21 @@ export async function contextFromDb(db: Stdb, runId?: string, zip?: string): Pro
       includes: c.includes,
       fileIO: c.file_io,
       takesParameters: c.takes_parameters,
+      // rule_ids[i] was created from analysis.business_rules[i], so the reason lines up by index.
       rules: c.rule_ids
-        .map(rid => rules.get(rid))
-        .filter(r => r !== undefined)
-        .map((r): RuleRef => ({ id: String(r.id), title: String(r.title), given: String(r.given), when: String(r.when_), then: String(r.then_), start: Number(r.legacy_start_line), end: Number(r.legacy_end_line) })),
+        .map((rid, i) => ({ row: rules.get(rid), reason: c.analysis!.business_rules?.[i]?.disposition_reason }))
+        .filter(x => x.row !== undefined)
+        .map(({ row: r, reason }): RuleRef => ({
+          id: String(r!.id), title: String(r!.title), given: String(r!.given), when: String(r!.when_), then: String(r!.then_),
+          start: Number(r!.legacy_start_line), end: Number(r!.legacy_end_line), disposition: String(r!.disposition ?? 'keep'), dispositionReason: reason,
+        })),
       summary: c.analysis!.summary,
       inputs: c.analysis!.inputs,
       outputs: c.analysis!.outputs,
       risks: c.analysis!.risks,
+      dataLayouts: c.analysis!.data_layouts ?? [],
+      modernizationNotes: c.analysis!.modernization_notes ?? '',
+      system: { targetReasons: sys.target_reasons ?? [], architecture: sys.architecture ?? '' },
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
   return { runId: id, extractDir, scan, targetLanguage: sys.target_language, targetRuntime: sys.target_runtime, programs };
@@ -247,6 +266,7 @@ export async function translateRun(ctx: TranslateContext, opts: TranslateOptions
         const unmapped = p.rules.filter(x => !mapped.has(x.id)).length;
         await event(
           `${p.name}: ${r.source.split('\n').length} lines, ${r.ruleMap.length}/${p.rules.length} rules mapped${unmapped ? ` (${unmapped} unmapped)` : ''}, ` +
+            (r.examples ? `legacy examples ${r.examples.matched ? `${r.examples.total}/${r.examples.total} match` : 'still differ (handed to the Verifier)'} after ${r.examples.runs} run(s), ` : '') +
             `static check ${r.check.status} after ${checks} check(s). Nemotron: ${llmNote(r.llm)}`
         );
       } catch (e) {

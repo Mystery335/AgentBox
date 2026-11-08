@@ -13,8 +13,11 @@
 //   translateProgram  one legacy program -> one target file
 
 import { createHash } from 'node:crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runToolLoop, type ToolDef, type ToolLoopResult } from '../llm.ts';
+import { canonical, runBatch } from '../modernize/sandbox.ts';
+import { lineDiff } from '../modernize/agents.ts';
 import type { Stdb } from '../stdb.ts';
 import type { ProjectView, LlmStats } from '../analyzer/agent.ts';
 import { checkFiles, RUN_CONTRACT, type CheckResult, type TargetProfile } from './targets.ts';
@@ -27,8 +30,12 @@ export interface RuleRef {
   then: string;
   start: number;
   end: number;
+  /** Analyzer's verdict: keep (normal), review (unclear / bug-like), drop_candidate (dead or test-only). */
+  disposition?: string;
+  dispositionReason?: string;
 }
 
+/** Everything the Analyzer found about one program, as the Translator's brief. */
 export interface ProgramToTranslate {
   path: string;
   name: string;
@@ -41,6 +48,38 @@ export interface ProgramToTranslate {
   inputs: { name: string; description: string }[];
   outputs: { name: string; description: string }[];
   risks: string[];
+  /** Record layouts the Analyzer identified (name, where defined, meaning). */
+  dataLayouts?: { name: string; defined_in: string; description: string }[];
+  /** The Analyzer's advice for modernizing this program. */
+  modernizationNotes?: string;
+  /** System-level decision: why this target language, and how the system fits together. */
+  system?: { targetReasons: string[]; architecture: string };
+}
+
+/** The Analyzer's findings for one program, formatted for the Translator. Exported for tests. */
+export function analyzerBrief(p: ProgramToTranslate): string {
+  const parts = [
+    '## What the Analyzer found (use it as your map; the legacy source below is the ground truth)',
+    `Summary: ${p.summary}`,
+    p.inputs.length ? `Inputs:\n${p.inputs.map(i => `- ${i.name}: ${i.description}`).join('\n')}` : '',
+    p.outputs.length ? `Outputs:\n${p.outputs.map(o => `- ${o.name}: ${o.description}`).join('\n')}` : '',
+    p.dataLayouts?.length ? `Data layouts:\n${p.dataLayouts.map(d => `- ${d.name} (${d.defined_in}): ${d.description}`).join('\n')}` : '',
+    p.fileIO.length ? `Files (COBOL SELECT ... ASSIGN): ${p.fileIO.map(f => `${f.name} -> ${f.assign}${f.organization ? ` (${f.organization.toLowerCase()})` : ''}`).join(', ')}` : '',
+    `Entered with parameters (CALL ... USING): ${p.takesParameters ? 'yes' : 'no'}`,
+    p.risks.length ? `Known risks:\n${p.risks.map(r => `- ${r}`).join('\n')}` : '',
+    p.modernizationNotes ? `Modernization notes: ${p.modernizationNotes}` : '',
+    p.system?.targetReasons.length ? `Why this target language was chosen:\n${p.system.targetReasons.map(r => `- ${r}`).join('\n')}` : '',
+    p.system?.architecture ? `How the system fits together: ${p.system.architecture}` : '',
+    `Business rules to implement (${p.rules.length}), one function each:`,
+    ...p.rules.map(r => {
+      const flag = r.disposition && r.disposition !== 'keep' ? ` [Analyzer marked ${r.disposition.toUpperCase().replace('_', ' ')}${r.dispositionReason ? `: ${r.dispositionReason}` : ''}]` : '';
+      return `- ${r.id} "${r.title}" [legacy lines ${r.start}-${r.end}]: given ${r.given}; when ${r.when}; then ${r.then}${flag}`;
+    }),
+    p.rules.some(r => r.disposition && r.disposition !== 'keep')
+      ? 'Rules marked REVIEW or DROP CANDIDATE still get implemented exactly as the legacy code behaves (outputs must match); say in "notes" what looked wrong or unused, for a human to decide.'
+      : '',
+  ];
+  return parts.filter(Boolean).join('\n');
 }
 
 export interface TranslationResult {
@@ -52,6 +91,8 @@ export interface TranslationResult {
   llm: LlmStats;
   /** Shared module only: code per section ("base" and one per include, by base name). */
   sections?: Record<string, string>;
+  /** Program only: whether the submitted code matched every legacy example, and how often run_examples ran. */
+  examples?: { matched: boolean; total: number; runs: number };
 }
 
 export interface TranslateEnv {
@@ -281,10 +322,29 @@ function fileTools(fileName: string): ToolDef[] {
 /** Consecutive searches allowed before the agent is told to get back to writing. */
 const MAX_SEARCH_STREAK = 5;
 
-function handler(env: TranslateEnv, file: SectionFile, gate: CheckGate, ownFiles: string[], readOnly: string[] = []) {
+/** Reads/searches allowed since the last write before the agent is told to write. */
+const MAX_EXPLORE_SINCE_WRITE = 6;
+
+function handler(
+  env: TranslateEnv,
+  file: SectionFile,
+  gate: CheckGate,
+  ownFiles: string[],
+  readOnly: string[] = [],
+  runner?: ExampleRunner,
+  /** Legacy files whose full text is already in the instructions (re-reading them is refused). */
+  shownInFull: string[] = []
+) {
   let searchStreak = 0;
+  let exploreSinceWrite = 0;
+  const writeNow = (why: string) =>
+    `${why} You already have what you need in your instructions. Write the file now with write_section (one section per call), then check_code${runner?.available ? ' and run_examples' : ''}, then submit.`;
   return async (name: string, a: Record<string, unknown>): Promise<string> => {
     searchStreak = name === 'search_legacy' ? searchStreak + 1 : 0;
+    if (name === 'read_legacy_file' || name === 'search_legacy') {
+      exploreSinceWrite++;
+      if (exploreSinceWrite > MAX_EXPLORE_SINCE_WRITE) return writeNow(`Stop exploring (${exploreSinceWrite - 1} reads/searches since you last wrote code).`);
+    }
     switch (name) {
       case 'read_legacy_file': {
         const p = str(a.path);
@@ -292,6 +352,7 @@ function handler(env: TranslateEnv, file: SectionFile, gate: CheckGate, ownFiles
         if (ownFiles.includes(path.posix.basename(p))) {
           return `${p} is not a legacy file: it is the file you are writing (or the shared module, shown in your instructions). Here it is:\n${file.view()}`;
         }
+        if (shownInFull.includes(p)) return writeNow(`${p} is already shown in full, with line numbers, in your instructions.`);
         return env.view.numbered(p, Number(a.start_line ?? 1), Number(a.end_line ?? Number.MAX_SAFE_INTEGER));
       }
       case 'search_legacy':
@@ -301,11 +362,17 @@ function handler(env: TranslateEnv, file: SectionFile, gate: CheckGate, ownFiles
         return env.view.search(str(a.pattern), str(a.path_prefix));
       case 'write_section':
         if (readOnly.includes(str(a.name).trim())) return `Section "${str(a.name).trim()}" is read-only (written by another task). Put your code in your own sections.`;
+        exploreSinceWrite = 0;
         return file.write(str(a.name), str(a.code));
       case 'view_file':
         return file.view();
       case 'check_code':
         return file.sections.size ? gate.check(file.source) : 'The file is empty.';
+      case 'run_examples': {
+        if (!runner?.available) return 'No examples are available for this program.';
+        if (!file.sections.size) return 'The file is empty.';
+        return (await runner.run(file.source)).report;
+      }
       default:
         throw new Error(`unknown tool ${name}`);
     }
@@ -316,8 +383,95 @@ const WORKFLOW = `How to work (each of your replies must stay short: at most one
 1. Read what you need with read_legacy_file / search_legacy.
 2. Build the file with write_section, one section per call: imports/constants first, then the functions, then main.
 3. Call check_code. If it reports errors, rewrite only the section each error names (write_section with the same name replaces it) and check again.
-4. When check_code returns OK, call the submit tool. (Submitting also re-checks the file if you changed it.)
-Keep your thinking brief: decide, then make the tool call.`;
+4. If you have the run_examples tool, call it once check_code is OK: it runs your code on real inputs and shows where your output differs from the legacy program. Fix those sections and run it again until every example matches.
+5. Then call the submit tool. (Submitting re-checks the file if you changed it.)
+Keep your thinking brief: decide, then make the tool call.
+The file is production code: short comments that name the rule or explain a legacy quirk. Never write your reasoning, notes to yourself or test code into the file; use run_examples to test.`;
+
+/**
+ * Production-code hygiene for a submitted program file: no process-spawning
+ * test code, nothing after the Python __main__ block, and not mostly comments
+ * (the model tends to leave its reasoning in comments). Exported for tests.
+ */
+export function hygieneProblem(source: string, profile: TargetProfile): string | undefined {
+  if (/^\s*(import\s+subprocess|from\s+subprocess\s+import)|require\(\s*['"](node:)?child_process['"]\s*\)|\bos\.system\s*\(|Runtime\.getRuntime\(\)\.exec|\bexec\.Command\s*\(/m.test(source)) {
+    return 'the file starts other processes (test code?). Remove it: use run_examples to test your code';
+  }
+  const lines = source.split('\n');
+  if (profile.id === 'python') {
+    const guard = lines.findIndex(l => /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/.test(l));
+    if (guard >= 0 && lines.slice(guard + 1).some(l => /^\S/.test(l) && !l.startsWith('#'))) {
+      return 'there is code after the if __name__ == "__main__": block. Remove it (test code belongs in run_examples, not the file)';
+    }
+  }
+  const nonBlank = lines.filter(l => l.trim()).length;
+  const comments = lines.filter(l => /^\s*(#|\/\/|\/\*|\*)/.test(l)).length;
+  if (comments > 40 && comments > 0.4 * nonBlank) {
+    return `${comments} of ${nonBlank} lines are comments. Keep short comments that name the rule or explain a legacy quirk; remove reasoning and notes`;
+  }
+  return undefined;
+}
+
+/**
+ * Runs the program being written on the real legacy examples (Verifier debug
+ * cases, never holdout) in the target sandbox and reports, line by line, where
+ * its output differs. Lets the Translator fix formatting slips before the
+ * Verifier and Debugger ever see the code.
+ */
+export class ExampleRunner {
+  runs = 0;
+  /** Submissions bounced because examples still differed. */
+  bounces = 0;
+  readonly passed = new Set<string>();
+  private readonly cfg: { profile: TargetProfile; image: string; workDir: string; fileName: string; shared: { fileName: string; source: string }; examples: Example[] };
+  constructor(cfg: ExampleRunner['cfg']) {
+    this.cfg = cfg;
+  }
+  get available(): boolean {
+    return this.cfg.examples.length > 0;
+  }
+  async run(source: string): Promise<{ ok: number; total: number; report: string }> {
+    const c = this.cfg;
+    this.runs++;
+    const codeDir = path.join(c.workDir, 'examples', 'code');
+    await rm(codeDir, { recursive: true, force: true });
+    await mkdir(codeDir, { recursive: true });
+    await writeFile(path.join(codeDir, c.shared.fileName), c.shared.source);
+    await writeFile(path.join(codeDir, c.fileName), source);
+    const res = await runBatch({
+      image: c.image,
+      build: c.profile.build(c.fileName),
+      run: c.profile.run(c.fileName),
+      workDir: path.join(c.workDir, 'examples'),
+      mounts: [{ host: codeDir, container: '/work' }],
+      cases: c.examples.map((e, i) => ({ id: String(i + 1).padStart(2, '0'), stdin: e.input })),
+    });
+    if (!res.built) return { ok: 0, total: c.examples.length, report: `The code does not build:\n${res.buildLog.slice(0, 2000)}` };
+    let ok = 0;
+    const parts: string[] = [];
+    c.examples.forEach((e, i) => {
+      const r = res.cases.get(String(i + 1).padStart(2, '0'));
+      const actual = r ? canonical(r.stdout, r.exitCode) : '[no result]';
+      if (actual === e.expected) {
+        ok++;
+        parts.push(`Example ${i + 1}: matches`);
+      } else {
+        parts.push(`Example ${i + 1}: DIFFERS (stdin ${JSON.stringify(e.input.slice(0, 200))})\n${lineDiff(e.expected, actual)}${r?.stderr.trim() ? `\nstderr: ${r.stderr.trim().slice(0, 600)}` : ''}`);
+      }
+    });
+    if (ok === c.examples.length) this.passed.add(sha(source));
+    return { ok, total: c.examples.length, report: `${ok}/${c.examples.length} examples match the legacy output.\n${parts.join('\n')}` };
+  }
+}
+
+const RUN_EXAMPLES_TOOL: ToolDef = {
+  name: 'run_examples',
+  description: 'Run your file as it is now on the real legacy examples, in the sandbox. Shows which examples match and, for the others, the first differing lines (JSON-quoted so spaces are visible).',
+  parameters: { type: 'object', properties: {} },
+};
+
+/** After this many bounced submissions the code is accepted anyway; the Verifier and Debugger take over. */
+const MAX_EXAMPLE_BOUNCES = 3;
 
 // ------------------------------------------------------ shared module
 // Built in pieces so every agent task stays small, whatever the number of
@@ -556,26 +710,23 @@ ${env.profile.conventions}
 ${WORKFLOW}`;
   const user = [
     `Program: ${p.name} (${p.path}, ${p.lines} lines). Target file: ${fileName}. Run as: ${env.profile.run(fileName)}`,
+    analyzerBrief(p),
     examplesBlock(examples),
-    `Analyzer summary: ${p.summary}`,
-    `Inputs: ${JSON.stringify(p.inputs)}`,
-    `Outputs: ${JSON.stringify(p.outputs)}`,
-    `Files (COBOL SELECT ... ASSIGN): ${JSON.stringify(p.fileIO)}`,
-    `Entered with parameters (CALL ... USING): ${p.takesParameters}`,
-    `Known risks: ${JSON.stringify(p.risks)}`,
-    `Business rules to implement (${p.rules.length}):\n${p.rules.map(r => `- ${r.id} "${r.title}" [lines ${r.start}-${r.end}]: given ${r.given}; when ${r.when}; then ${r.then}`).join('\n')}`,
     `Shared module ${shared.fileName} (the parts this program uses):\n${relevantShared(shared, p)}`,
     `Legacy source:\n${await env.view.numbered(p.path, 1, 400)}`,
   ].join('\n\n');
   const ruleIds = new Set(p.rules.map(r => r.id));
+  const runner = new ExampleRunner({ profile: env.profile, image: env.image, workDir, fileName, shared, examples });
   const r = await runToolLoop({
     db: env.db,
     system,
     user,
-    tools: [...READ_TOOLS, ...fileTools(fileName), SUBMIT],
-    handle: handler(env, file, gate, [fileName, shared.fileName]),
+    tools: [...READ_TOOLS, ...fileTools(fileName), ...(runner.available ? [RUN_EXAMPLES_TOOL] : []), SUBMIT],
+    // The instructions show the first 400 lines of the program: for shorter
+    // programs that is all of it, so re-reading it is refused.
+    handle: handler(env, file, gate, [fileName, shared.fileName], [], runner, p.lines <= 400 ? [p.path] : []),
     finalTool: SUBMIT.name,
-    validate: a => {
+    validate: async a => {
       if (file.source.trim().length < 50) return 'the file is empty: write it with write_section first';
       const map = Array.isArray(a.rule_map) ? (a.rule_map as Record<string, unknown>[]) : [];
       const mapped = new Set(map.map(m => String(m?.rule_id ?? '')));
@@ -583,9 +734,22 @@ ${WORKFLOW}`;
       if (ruleIds.size > 0 && missing.length > ruleIds.size / 2) return `rule_map is missing most rules: ${missing.slice(0, 8).join(', ')}`;
       const undefinedFns = map.map(m => String(m?.function ?? '')).filter(fn => fn && !definesFunction(file.source, fn));
       if (undefinedFns.length) return `rule_map names functions that are not in the file: ${undefinedFns.slice(0, 8).join(', ')}. Write them (write_section) or fix rule_map`;
-      return gate.gate(file.source);
+      const dirty = hygieneProblem(file.source, env.profile);
+      if (dirty) return dirty;
+      const compile = await gate.gate(file.source);
+      if (compile) return compile;
+      // Behaviour on the real examples: bounce a few times with the diff, then
+      // hand over to the Verifier/Debugger anyway.
+      if (runner.available && !runner.passed.has(sha(file.source)) && runner.bounces < MAX_EXAMPLE_BOUNCES) {
+        const res = await runner.run(file.source);
+        if (res.ok < res.total) {
+          runner.bounces++;
+          return `the code compiles, but its output differs from the legacy program on real inputs. ${res.report.slice(0, 3000)}`;
+        }
+      }
+      return undefined;
     },
-    maxTurns: 20 + 2 * p.rules.length,
+    maxTurns: 26 + 2 * p.rules.length,
     maxTokens: MAX_TOKENS,
     onToolCall: env.onToolCall,
     onReject: env.onReject,
@@ -601,5 +765,6 @@ ${WORKFLOW}`;
       const full = ruleIds.has(id) ? id : [...ruleIds].find(x => x.endsWith(`:${id}`)) ?? id;
       return { rule_id: full, function: String(m.function) };
     });
-  return { source, sha256: sha(source), check, ruleMap, notes: str(r.answer.notes), llm: stats(r) };
+  const examplesResult = runner.available ? { matched: runner.passed.has(sha(source)), total: examples.length, runs: runner.runs } : undefined;
+  return { source, sha256: sha(source), check, ruleMap, notes: str(r.answer.notes), llm: stats(r), examples: examplesResult };
 }
