@@ -44,8 +44,8 @@ function App() {
   };
   return (
     <>
-      {(route.startsWith("#/workspace/activity") || route.startsWith("#/workspace/validation")) ? (
-        <LiveAgentActivity validation={route.startsWith("#/workspace/validation")} requestedRunId={new URLSearchParams(route.split("?")[1] ?? "").get("run") ?? undefined} />
+      {(route.startsWith("#/workspace/activity") || route.startsWith("#/workspace/validation") || route.startsWith("#/workspace/documentation")) ? (
+        <LiveAgentActivity documentation={route.startsWith("#/workspace/documentation")} validation={route.startsWith("#/workspace/validation")} requestedRunId={new URLSearchParams(route.split("?")[1] ?? "").get("run") ?? undefined} />
       ) : route.split("?")[0].replace(/\/$/, "") === "#/workspace" ? (
         <LiveOverview />
       ) : isWorkspace ? (

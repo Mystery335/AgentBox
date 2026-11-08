@@ -31,9 +31,9 @@ export default function LiveOverview() {
         <a href="#/workspace" aria-current="page">▦ Modernizations <small>live</small></a>
         <a href="#/workspace/activity">◇ Agent activity <small>live</small></a>
         <a href="#/workspace/validation">✓ Validation <small>live</small></a>
-        <a href="#/workspace/documentation">▤ Documentation <small>preview</small></a>
+        <a href="#/workspace/documentation">▤ Documentation <small>live</small></a>
       </nav>
-      <div className="la-sidebar-note">Overview, Activity and Validation read real database records. Documentation still uses example data.</div>
+      <div className="la-sidebar-note">Overview, Activity, Validation and Documentation read real database records.</div>
       <a href="#/workspace/new" className="la-new">+ Prepare a draft</a>
     </aside>
     <main className="la-main">
@@ -50,7 +50,7 @@ export default function LiveOverview() {
             <div className="lo-run-top"><div><h2>{run.legacyName}</h2><p>{run.legacyLanguage || 'Source not recorded'} → {run.targetLanguage || 'Target not chosen yet'}</p></div><span className={`lo-status ${run.status === 'failed' ? 'lo-failed' : run.status === 'ready_for_cutover' ? 'lo-matched' : ''}`}>{statusLabel(run.status)}</span></div>
             <p className="la-run-id">{run.id}</p>
             <dl className="lo-evidence"><div><dt>Passing / recorded cases</dt><dd>{!summariesReady ? 'Loading…' : summary ? `${summary.testsPassed} / ${summary.testsTotal}` : 'Summary unavailable'}</dd></div><div><dt>Business rules</dt><dd>{summary?.rulesTotal ?? '—'}</dd></div><div><dt>Recorded repairs</dt><dd>{summary?.debugAttempts ?? '—'}</dd></div><div><dt>Agent events</dt><dd>{summary?.events ?? '—'}</dd></div></dl>
-            <div className="lo-run-footer"><p>Started {formatTime(run.startedAt.microsSinceUnixEpoch)} CT{run.finishedAt ? ` · Finished ${formatTime(run.finishedAt.microsSinceUnixEpoch)} CT` : ''}</p><div><a href={`#/workspace/activity${query}`}>Agent activity →</a><a href={`#/workspace/validation${query}`}>Validation →</a></div></div>
+            <div className="lo-run-footer"><p>Started {formatTime(run.startedAt.microsSinceUnixEpoch)} CT{run.finishedAt ? ` · Finished ${formatTime(run.finishedAt.microsSinceUnixEpoch)} CT` : ''}</p><div><a href={`#/workspace/activity${query}`}>Agent activity →</a><a href={`#/workspace/validation${query}`}>Validation →</a><a href={`#/workspace/documentation${query}`}>Documentation →</a></div></div>
           </article>;
         })}</div>
         {!visible.length && <div className="la-empty">{matchingSearch.length && status !== 'all' ? `Found ${matchingSearch.length} matching run(s), hidden by the ${statusLabel(status)} status filter.` : 'No runs match this search.'}{matchingSearch.length > 0 && status !== 'all' && <button className="button secondary" onClick={() => setStatus('all')}>Show matching runs in all statuses</button>}<button className="button secondary" onClick={() => { setSearch(''); setStatus('all'); }}>Clear filters</button></div>}
